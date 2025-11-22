@@ -584,5 +584,5 @@ st.sidebar.markdown("""
 
 st.sidebar.markdown("### ℹ️ About")
 st.sidebar.markdown("""
-Built with Streamlit and Python for particle physics data analysis and education.
+Built by Dr. Wasikul Islam (https://wasikatcern.github.io), with Streamlit and Python for particle physics data analysis and education. Contact: wasikul.islam@cern.ch
 """)
