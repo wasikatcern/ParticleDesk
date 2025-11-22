@@ -380,13 +380,16 @@ elif page == "📤 Upload Data":
 elif page == "🤖 AI Analysis":
     st.markdown('<div class="main-header">🤖 AI-Powered Analysis Assistant</div>', unsafe_allow_html=True)
     
-    # Check if OpenAI API key is available
-    if not os.getenv('OPENAI_API_KEY'):
-        st.warning("⚠️ OpenAI API key not configured. Please add your OPENAI_API_KEY to use AI analysis features.")
+    # Check if Gemini API key is available (using Google Gemini - FREE)
+    if not os.getenv('GEMINI_API_KEY'):
+        st.warning("⚠️ Gemini API key not configured. Please add your GEMINI_API_KEY to use AI analysis features.")
         st.markdown("""
-        To use AI analysis:
-        1. Get an API key from https://platform.openai.com/
-        2. Add it to your Replit Secrets as `OPENAI_API_KEY`
+        To use FREE AI analysis with Google Gemini:
+        1. Go to https://ai.google.dev/
+        2. Click "Get API Key" (requires a Google account, completely FREE - no payment needed)
+        3. Create a new API key in Google Cloud
+        4. On Render: Go to your project → Environment → Add GEMINI_API_KEY
+        5. Paste your API key and deploy
         """)
     else:
         st.markdown("""
@@ -567,6 +570,19 @@ elif page == "📊 Data Explorer":
                 st.plotly_chart(fig, use_container_width=True)
     
     else:
-        st.warning("⚠️ No data loaded.")
+        st.warning("⚠️ No data loaded. Please upload data or load an example first.")
         st.markdown("Go to **📤 Upload Data** or **📚 Examples Gallery** to load a dataset.")
 
+# Footer
+st.sidebar.markdown("---")
+st.sidebar.markdown("### 📚 Resources")
+st.sidebar.markdown("""
+- [CERN Open Data](https://opendata.cern.ch/)
+- [CMS Open Data](https://cms-opendata-guide.web.cern.ch/)
+- [GitHub Examples](https://github.com/cms-opendata-analyses)
+""")
+
+st.sidebar.markdown("### ℹ️ About")
+st.sidebar.markdown("""
+Built with Streamlit and Python for particle physics data analysis and education.
+""")
