@@ -1,0 +1,12 @@
+streamlit==1.51.0
+pandas>=2.3.3
+numpy>=2.3.5
+matplotlib>=3.10.7
+plotly>=6.5.0
+scipy>=1.16.3
+requests>=2.32.5
+uproot>=5.6.8
+awkward>=2.8.10
+particle>=0.26.0
+openai>=2.8.1
+trafilatura>=2.0.0
