@@ -1,7 +1,7 @@
 """
-AI-powered analysis assistant using OpenAI.
+AI-powered analysis assistant using Google Gemini (FREE).
 Interprets natural language prompts and generates analysis code.
-Reference: python_openai integration blueprint
+Reference: python_gemini integration blueprint
 """
 
 import os
@@ -9,14 +9,15 @@ import json
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-from openai import OpenAI
+from google import genai
+from google.genai import types
 
-# the newest OpenAI model is "gpt-5" which was released August 7, 2025.
+# the newest Gemini model is "gemini-2.5-flash" or "gemini-2.5-pro"
 # do not change this unless explicitly requested by the user
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
-# This is using OpenAI's API, which points to OpenAI's API servers and requires your own API key.
-openai_client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
+# This is using Google Gemini's free API (no payment required, just get a free API key from Google AI Studio)
+gemini_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
 
 def analyze_with_ai(user_prompt: str, df: pd.DataFrame) -> dict:
@@ -32,10 +33,10 @@ def analyze_with_ai(user_prompt: str, df: pd.DataFrame) -> dict:
         Dictionary with analysis results, plots, and explanations
     """
     
-    if not openai_client:
+    if not gemini_client:
         return {
             'success': False,
-            'error': 'OpenAI API key not configured'
+            'error': 'Gemini API key not configured. Get a free API key from https://ai.google.dev/'
         }
     
     # Get data info
@@ -85,19 +86,22 @@ Examples:
 - For "plot mass between 70 and 200 GeV": {{"plot_type": "histogram", "column_x": "M", "bins": 50, "filters": {{"M": {{"min": 70, "max": 200}}}}, "column_y": null}}
 """
 
-    # Call OpenAI API
+    # Call Gemini API
     try:
-        response = openai_client.chat.completions.create(
-            model="gpt-5",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
+        response = gemini_client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=[
+                types.Content(role="user", parts=[
+                    types.Part(text=system_prompt + "\n\nUser request: " + user_prompt)
+                ])
             ],
-            response_format={"type": "json_object"}
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json"
+            )
         )
         
         # Parse response
-        spec = json.loads(response.choices[0].message.content)
+        spec = json.loads(response.text)
         
         # Execute the analysis safely using the declarative specification
         try:
@@ -116,7 +120,7 @@ Examples:
     except Exception as e:
         return {
             'success': False,
-            'error': f'Error calling OpenAI API: {str(e)}'
+            'error': f'Error calling Gemini API: {str(e)}'
         }
 
 
