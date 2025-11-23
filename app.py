@@ -482,6 +482,7 @@ st.sidebar.markdown("""
 - [CERN Open Data](https://opendata.cern.ch/)
 - [CMS Open Data](https://cms-opendata-guide.web.cern.ch/)
 - [ATLAS Open Data](https://atlas-opendata.web.cern.ch/)
+""")
 
 st.sidebar.markdown("### ℹ️ About")
 st.sidebar.markdown("""
