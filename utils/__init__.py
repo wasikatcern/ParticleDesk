@@ -8,6 +8,7 @@ from .root_parser import (
     list_trees, 
     get_tree_branches,
     read_tree_to_dataframe,
+    read_histogram, # <-- Added this import
     get_root_file_info
 )
 from .physics_utils import (
@@ -30,6 +31,7 @@ __all__ = [
     'list_trees',
     'get_tree_branches',
     'read_tree_to_dataframe',
+    'read_histogram', # <-- Added this export
     'get_root_file_info',
     'calculate_invariant_mass_4lepton',
     'calculate_invariant_mass_2particle',
