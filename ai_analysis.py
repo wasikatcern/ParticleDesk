@@ -1,7 +1,6 @@
 """
 AI-powered analysis assistant using Google Gemini (FREE).
-Interprets natural language prompts and generates analysis code.
-Reference: python_gemini integration blueprint
+Interprets natural language prompts and generates a full analysis pipeline in JSON format.
 """
 
 import os
@@ -11,26 +10,31 @@ import numpy as np
 import matplotlib.pyplot as plt
 from google import genai
 from google.genai import types
+from scipy.optimize import curve_fit
+from scipy.stats import norm
+import logging
+
+# Ensure utility functions are imported for the execution engine
+from .physics_utils import (
+    calculate_invariant_mass_2particle,
+    calculate_transverse_mass,
+    delta_r
+    # Note: calculate_invariant_mass_4lepton is too complex for general AI generation, 
+    # but can be added as a specific function with a clear input map in the prompt.
+)
+
+logger = logging.getLogger(__name__)
 
 # the newest Gemini model is "gemini-2.5-flash" or "gemini-2.5-pro"
-# do not change this unless explicitly requested by the user
+# Do not change this unless explicitly requested by the user
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
-# This is using Google Gemini's free API (no payment required, just get a free API key from Google AI Studio)
 gemini_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
-
 
 def analyze_with_ai(user_prompt: str, df: pd.DataFrame) -> dict:
     """
     Analyze particle physics data based on natural language prompt.
-    Uses a safe declarative approach instead of executing arbitrary code.
-    
-    Args:
-        user_prompt: Natural language analysis request
-        df: DataFrame with particle physics data
-        
-    Returns:
-        Dictionary with analysis results, plots, and explanations
+    Generates and executes a multi-step declarative analysis pipeline.
     """
     
     if not gemini_client:
@@ -39,54 +43,77 @@ def analyze_with_ai(user_prompt: str, df: pd.DataFrame) -> dict:
             'error': 'Gemini API key not configured. Get a free API key from https://ai.google.dev/'
         }
     
-    # Get data info
+    # --- STEP 1: AI GENERATION OF DECLARATIVE SPECIFICATION ---
     data_info = {
         'columns': df.columns.tolist(),
         'shape': df.shape,
         'dtypes': {col: str(dtype) for col, dtype in df.dtypes.items()},
-        'sample': df.head(3).to_dict('records')
+        'sample': df.head(1).to_dict('records')
     }
     
-    # Create system prompt for the AI - request declarative instructions
-    system_prompt = f"""You are a particle physics data analysis expert. You help users analyze particle physics data from experiments like CMS at CERN.
+    # Detailed System Prompt for complex physics analysis
+    system_prompt = f"""You are a particle physics data analysis expert. Your role is to convert a user's natural language request into a multi-step, declarative analysis pipeline in JSON format.
+
+The analysis MUST proceed in this order: 
+1. **Calculations**: Create new derived variables (e.g., invariant mass, DeltaR).
+2. **Analysis Steps**: Apply filters (cuts) to the data.
+3. **Visualization**: Define one or more plot layers (for overlapping plots).
+4. **Statistical Report**: Perform statistical operations (e.g., fitting).
 
 Available data columns: {', '.join(data_info['columns'])}
 Number of events: {data_info['shape'][0]}
 
-Common physics variables in the data:
-- M, m_inv: Invariant mass (GeV/c²)
-- pt, pt1, pt2: Transverse momentum (GeV/c)
-- eta: Pseudorapidity
-- phi: Azimuthal angle (radians)
-- E: Energy (GeV)
-- px, py, pz: Momentum components (GeV/c)
-- Q: Electric charge
+**Available Calculation Functions and their arguments (use for 'calculate_variable' step):**
+- **invariant_mass_2particle**: Calculates $M_{inv}$ for two particles. Requires: `pt1`, `eta1`, `phi1`, `mass1` (or fixed mass constant like `MUON_MASS`), and similarly for particle 2.
+- **delta_r**: Calculates $\Delta R$ between two particles. Requires: `eta1`, `phi1`, `eta2`, `phi2`.
+- **calculate_transverse_mass**: Calculates $M_T$. Requires: `pt`, `phi`, `met`, `met_phi`.
 
-Your task is to interpret the user's request and return a declarative specification for the analysis.
-Return ONLY a JSON object with these fields:
+**Return ONLY a single JSON object with the following structure:**
 
 {{
-    "explanation": "Brief explanation of what analysis will be performed",
-    "plot_type": "histogram|scatter|2dhist|line|none",
-    "column_x": "column name for x-axis (or main variable for histogram)",
-    "column_y": "column name for y-axis (required for scatter/2dhist/line, null for histogram)",
-    "bins": 50,
-    "range_min": null,
-    "range_max": null,
-    "title": "Plot title with proper physics notation",
-    "xlabel": "X-axis label with units",
-    "ylabel": "Y-axis label with units",
-    "statistics": ["mean", "std", "median"] or [] if none requested,
-    "filters": {{"column_name": {{"min": value, "max": value}}}} or null
+    "explanation": "Brief explanation of the analysis strategy and physics context.",
+    "pipeline": [
+        {{
+            "type": "calculate_variable",
+            "new_column": "M_ll",
+            "function": "invariant_mass_2particle",
+            "args": {{"pt1": "lep1_pt", "eta1": "lep1_eta", "phi1": "lep1_phi", "mass1": "MUON_MASS", "pt2": "lep2_pt", "eta2": "lep2_eta", "phi2": "lep2_phi", "mass2": "MUON_MASS"}}
+        }},
+        {{
+            "type": "apply_filter",
+            "column": "lep1_pt",
+            "min": 20.0,
+            "max": null,
+            "condition_type": "min_max"
+        }}
+    ],
+    "plotting": [
+        {{
+            "data_col": "M_ll",
+            "plot_type": "histogram",
+            "label": "Z Boson Peak",
+            "filters": {{"M_ll": {{"min": 60, "max": 120}}}},
+            "config": {{"bins": 100, "range_min": 60, "range_max": 120, "color": "steelblue", "alpha": 0.7}}
+        }}
+    ],
+    "statistics_report": [
+        {{
+            "column": "M_ll",
+            "operation": "fit_gaussian",
+            "range": [80, 100]
+        }}
+    ],
+    "metadata": {{
+        "title": "Invariant Mass Distribution for User-Defined Z Boson Selection",
+        "xlabel": "Dilepton Invariant Mass $M_{\\ell\\ell}$ [GeV/c²]",
+        "ylabel": "Events / bin"
+    }}
 }}
 
-Examples:
-- For "plot invariant mass": {{"plot_type": "histogram", "column_x": "M", "bins": 50, "title": "Four-Lepton Invariant Mass", "xlabel": "M [GeV/c²]", "ylabel": "Events", "column_y": null}}
-- For "show pt vs eta": {{"plot_type": "scatter", "column_x": "eta1", "column_y": "pt1", "title": "Transverse Momentum vs Pseudorapidity", "xlabel": "η", "ylabel": "p_T [GeV/c]"}}
-- For "plot mass between 70 and 200 GeV": {{"plot_type": "histogram", "column_x": "M", "bins": 50, "filters": {{"M": {{"min": 70, "max": 200}}}}, "column_y": null}}
+Ensure all column names used in 'args', 'column', and 'data_col' fields exist in the data columns provided or were created in a previous 'calculate_variable' step. Use proper physics notation in 'title', 'xlabel', and 'ylabel'. Focus on providing a complete and correct analysis pipeline for the user's request.
 """
-
-    # Call Gemini API
+    
+    # Call Gemini API with JSON response schema enforced
     try:
         response = gemini_client.models.generate_content(
             model="gemini-2.5-flash",
@@ -99,237 +126,202 @@ Examples:
                 response_mime_type="application/json"
             )
         )
-        
-        # Parse response
         spec = json.loads(response.text)
         
-        # Execute the analysis safely using the declarative specification
-        try:
-            result = execute_safe_analysis(df, spec)
-            result['specification'] = spec
-            return result
-            
-        except Exception as exec_error:
-            return {
-                'success': False,
-                'error': f'Error executing analysis: {str(exec_error)}',
-                'specification': spec,
-                'explanation': spec.get('explanation', '')
-            }
-    
     except Exception as e:
-        return {
-            'success': False,
-            'error': f'Error calling Gemini API: {str(e)}'
-        }
+        return {'success': False, 'error': f"AI generation failed: {str(e)}"}
 
-
-def execute_safe_analysis(df: pd.DataFrame, spec: dict) -> dict:
-    """
-    Safely execute analysis based on declarative specification.
-    No arbitrary code execution - only predefined safe operations.
-    
-    Args:
-        df: DataFrame with data
-        spec: Declarative specification from AI
-        
-    Returns:
-        Analysis results with plot and statistics
-    """
-    plot_type = spec.get('plot_type', 'none')
-    column_x = spec.get('column_x')
-    column_y = spec.get('column_y')
-    
-    # Validate plot type requirements
-    if plot_type in ['scatter', '2dhist', 'line']:
-        if not column_y:
-            raise ValueError(f"Plot type '{plot_type}' requires column_y to be specified")
-    
-    # Validate columns exist
-    if column_x and column_x not in df.columns:
-        raise ValueError(f"Column {column_x} not found in data")
-    if column_y and column_y not in df.columns:
-        raise ValueError(f"Column {column_y} not found in data")
-    
-    # Apply filters if specified (safe operations only)
+    # --- STEP 2: PYTHON EXECUTION ENGINE (THE FIXED ANALYSIS) ---
     filtered_df = df.copy()
-    if spec.get('filters'):
-        for col, filter_spec in spec['filters'].items():
-            if col in filtered_df.columns:
-                # Only allow safe comparison operations
-                if 'min' in filter_spec:
-                    filtered_df = filtered_df[filtered_df[col] >= filter_spec['min']]
-                if 'max' in filter_spec:
-                    filtered_df = filtered_df[filtered_df[col] <= filter_spec['max']]
+    analysis_results = {}
     
-    # Calculate statistics if requested
-    stats_results = {}
-    if spec.get('statistics') and column_x:
-        stat_functions = {
-            'mean': filtered_df[column_x].mean,
-            'std': filtered_df[column_x].std,
-            'median': filtered_df[column_x].median,
-            'min': filtered_df[column_x].min,
-            'max': filtered_df[column_x].max,
-            'count': filtered_df[column_x].count
-        }
-        
-        for stat in spec.get('statistics', []):
-            if stat in stat_functions:
-                stats_results[stat] = stat_functions[stat]()
+    # Execute Pipeline Steps (Calculations and Filters)
+    try:
+        if 'pipeline' in spec:
+            for step in spec['pipeline']:
+                if step['type'] == 'calculate_variable':
+                    # Execute calculation function
+                    func_name = step['function']
+                    func_args = step['args']
+                    
+                    # Map constant names to their values (e.g., "MUON_MASS")
+                    mapped_args = {}
+                    for k, v in func_args.items():
+                        if isinstance(v, str) and v.isupper() and 'MASS' in v:
+                            try:
+                                # This assumes physics_utils is imported correctly and has constants
+                                mapped_args[k] = getattr(importlib.import_module(".physics_utils", package=".") if __name__ == '__main__': pass else __import__('utils.physics_utils', fromlist=['*']), v)
+                            except AttributeError:
+                                # Fallback to looking in the dataframe or assuming the string is the value
+                                mapped_args[k] = float(v) if v.replace('.', '', 1).isdigit() else v
+                        else:
+                            mapped_args[k] = v
+
+                    # Prepare function call (dynamic dispatch)
+                    if func_name == 'invariant_mass_2particle':
+                        new_col_data = calculate_invariant_mass_2particle(
+                            filtered_df, 
+                            pt1=filtered_df[mapped_args['pt1']].values,
+                            eta1=filtered_df[mapped_args['eta1']].values,
+                            phi1=filtered_df[mapped_args['phi1']].values,
+                            m1=mapped_args.get('mass1', 0.0), # Use 0.0 if not specified
+                            pt2=filtered_df[mapped_args['pt2']].values,
+                            eta2=filtered_df[mapped_args['eta2']].values,
+                            phi2=filtered_df[mapped_args['phi2']].values,
+                            m2=mapped_args.get('mass2', 0.0) # Use 0.0 if not specified
+                        )
+                    elif func_name == 'delta_r':
+                         new_col_data = delta_r(
+                            filtered_df[mapped_args['eta1']].values,
+                            filtered_df[mapped_args['phi1']].values,
+                            filtered_df[mapped_args['eta2']].values,
+                            filtered_df[mapped_args['phi2']].values
+                         )
+                    elif func_name == 'calculate_transverse_mass':
+                         new_col_data = calculate_transverse_mass(
+                            filtered_df[mapped_args['pt']].values,
+                            filtered_df[mapped_args['phi']].values,
+                            filtered_df[mapped_args['met']].values,
+                            filtered_df[mapped_args['met_phi']].values
+                         )
+                    else:
+                        raise ValueError(f"Unsupported calculation function: {func_name}")
+                        
+                    filtered_df[step['new_column']] = new_col_data
+                    analysis_results[f"Calculated: {step['new_column']}"] = f"{step['new_column']} created using {func_name}"
+                    
+                elif step['type'] == 'apply_filter':
+                    col = step['column']
+                    min_val = step.get('min')
+                    max_val = step.get('max')
+                    
+                    initial_count = len(filtered_df)
+                    if min_val is not None:
+                        filtered_df = filtered_df[filtered_df[col] >= min_val]
+                    if max_val is not None:
+                        filtered_df = filtered_df[filtered_df[col] <= max_val]
+                    
+                    final_count = len(filtered_df)
+                    analysis_results[f"Filter: {col}"] = f"Applied cut: {min_val or '-'} <= {col} <= {max_val or '-'}. Events remaining: {final_count} (lost {initial_count - final_count})"
+                    
+    except Exception as e:
+        return {'success': False, 'error': f"Error during pipeline execution: {str(e)}"}
+
+
+    # Execute Plotting Steps (Overlapping Plots)
+    fig, ax = plt.subplots(figsize=(10, 6))
+    if 'plotting' in spec and spec['plotting']:
+        try:
+            for plot_spec in spec['plotting']:
+                data_col = plot_spec['data_col']
+                plot_type = plot_spec['plot_type']
+                label = plot_spec.get('label', 'Data')
+                config = plot_spec.get('config', {})
+                filters = plot_spec.get('filters', {})
+                
+                # Apply temporary filters for this plot layer
+                plot_data = filtered_df.copy()
+                for col, f_spec in filters.items():
+                    if 'min' in f_spec and f_spec['min'] is not None:
+                        plot_data = plot_data[plot_data[col] >= f_spec['min']]
+                    if 'max' in f_spec and f_spec['max'] is not None:
+                        plot_data = plot_data[plot_data[col] <= f_spec['max']]
+                
+                data = plot_data[data_col].dropna().values
+                
+                if plot_type == 'histogram' and len(data) > 0:
+                    ax.hist(
+                        data, 
+                        bins=config.get('bins', 50),
+                        range=(config['range_min'], config['range_max']) if config.get('range_min') and config.get('range_max') else None,
+                        edgecolor='black',
+                        alpha=config.get('alpha', 0.7),
+                        color=config.get('color', None),
+                        histtype=config.get('histtype', 'stepfilled'),
+                        label=label
+                    )
+                elif plot_type == 'scatter':
+                    col_y = config['column_y']
+                    ax.scatter(data, plot_data[col_y].values, s=5, alpha=config.get('alpha', 0.5), label=label, color=config.get('color', None))
+                    ax.set_ylabel(spec['metadata'].get('ylabel', col_y))
+
+            # Apply final plot metadata
+            ax.set_title(spec['metadata'].get('title', 'AI Generated Plot'), fontweight='bold')
+            ax.set_xlabel(spec['metadata'].get('xlabel', 'X-axis'))
+            ax.set_ylabel(spec['metadata'].get('ylabel', 'Events'))
+            ax.grid(True, alpha=0.3)
+            if len(spec['plotting']) > 1 or any('label' in p for p in spec['plotting']):
+                ax.legend()
+            
+            analysis_results['Plot'] = fig
+            
+        except Exception as e:
+            analysis_results['Plot Error'] = f"Plotting failed: {str(e)}"
+            fig = None
+    else:
+        fig = None
+
+    # Execute Statistical Reporting (Fitting)
+    if 'statistics_report' in spec and spec['statistics_report']:
+        stats_data = []
+        for stat_spec in spec['statistics_report']:
+            col = stat_spec['column']
+            operation = stat_spec['operation']
+            fit_range = stat_spec.get('range')
+
+            if col in filtered_df.columns and operation == 'fit_gaussian':
+                data = filtered_df[col].dropna()
+                if fit_range:
+                    data = data[(data >= fit_range[0]) & (data <= fit_range[1])]
+
+                if len(data) > 20:
+                    # Perform histogram and initial parameter estimation
+                    try:
+                        counts, bin_edges = np.histogram(data, bins=50, range=fit_range)
+                        bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
+                        
+                        mean_guess = data.mean()
+                        std_guess = data.std()
+                        amplitude_guess = counts.max()
+                        
+                        # Define Gaussian function
+                        def gaussian(x, amplitude, mean, stddev):
+                            return amplitude * np.exp(-((x - mean) / stddev)**2 / 2)
+
+                        popt, pcov = curve_fit(gaussian, bin_centers, counts, 
+                                               p0=[amplitude_guess, mean_guess, std_guess],
+                                               maxfev=5000)
+                        
+                        perr = np.sqrt(np.diag(pcov))
+                        
+                        stats_data.append({
+                            "Statistic": f"Gaussian Fit (Range: {fit_range[0]}-{fit_range[1]} GeV)",
+                            "Result": f"Peak Mass: {popt[1]:.3f} ± {perr[1]:.3f} GeV/c²",
+                            "Amplitude": f"{popt[0]:.2f} ± {perr[0]:.2f}",
+                            "Width (σ)": f"{abs(popt[2]):.3f} ± {perr[2]:.3f} GeV/c²"
+                        })
+                        
+                        # Add fit plot to the figure if it exists
+                        if fig:
+                            fit_x = np.linspace(bin_edges.min(), bin_edges.max(), 1000)
+                            ax.plot(fit_x, gaussian(fit_x, *popt), 'r--', linewidth=2, label='Gaussian Fit')
+                            if 'Plot' in analysis_results:
+                                # Re-set the figure with the fit added
+                                analysis_results['Plot'] = fig
+                            
+                    except Exception as e:
+                        stats_data.append({"Statistic": f"Gaussian Fit Error ({col})", "Result": f"Fit failed: {str(e)}"})
+                else:
+                    stats_data.append({"Statistic": f"Gaussian Fit Error ({col})", "Result": "Not enough data points for fit."})
+
+        analysis_results['Statistics'] = pd.DataFrame(stats_data)
     
-    # Create plot based on type
-    fig = None
-    if plot_type != 'none':
-        fig, ax = plt.subplots(figsize=(10, 6))
-        
-        if plot_type == 'histogram':
-            bins = spec.get('bins', 50)
-            range_min = spec.get('range_min')
-            range_max = spec.get('range_max')
-            
-            data = filtered_df[column_x].dropna()
-            
-            if range_min is not None and range_max is not None:
-                hist_range = (range_min, range_max)
-            else:
-                hist_range = None
-            
-            ax.hist(data, bins=bins, range=hist_range, 
-                   edgecolor='black', alpha=0.7, color='steelblue')
-            
-            # Add Higgs mass line if plotting mass around that range
-            if column_x in ['M', 'mass', 'm_inv', 'M4l']:
-                data_min, data_max = data.min(), data.max()
-                if data_min <= 125 <= data_max:
-                    ax.axvline(125, color='red', linestyle='--', 
-                              linewidth=2, label='Higgs mass (125 GeV)')
-                    ax.legend()
-        
-        elif plot_type == 'scatter':
-            data_x = filtered_df[column_x].dropna()
-            data_y = filtered_df[column_y].dropna()
-            
-            # Only plot where both are valid
-            valid_mask = ~(filtered_df[column_x].isna() | filtered_df[column_y].isna())
-            ax.scatter(filtered_df[column_x][valid_mask], 
-                      filtered_df[column_y][valid_mask],
-                      alpha=0.5, s=10)
-        
-        elif plot_type == '2dhist':
-            data_x = filtered_df[column_x].dropna()
-            data_y = filtered_df[column_y].dropna()
-            
-            valid_mask = ~(filtered_df[column_x].isna() | filtered_df[column_y].isna())
-            ax.hist2d(filtered_df[column_x][valid_mask],
-                     filtered_df[column_y][valid_mask],
-                     bins=50, cmap='Blues')
-            plt.colorbar(ax.collections[0], ax=ax, label='Events')
-        
-        elif plot_type == 'line':
-            ax.plot(filtered_df[column_x], filtered_df[column_y] if column_y else filtered_df.index)
-        
-        # Set labels and title
-        ax.set_xlabel(spec.get('xlabel', column_x), fontsize=12)
-        ax.set_ylabel(spec.get('ylabel', column_y if column_y else 'Events'), fontsize=12)
-        ax.set_title(spec.get('title', 'Physics Analysis'), fontsize=14, fontweight='bold')
-        ax.grid(True, alpha=0.3)
-        
-        plt.tight_layout()
-    
+
+    # --- STEP 3: CONSTRUCT FINAL RESULT ---
     return {
         'success': True,
-        'explanation': spec.get('explanation', ''),
-        'figure': fig,
-        'results': stats_results if stats_results else None,
-        'statistics': spec.get('statistics', '')
+        'explanation': spec.get('explanation', 'Analysis performed.'),
+        'specification': spec,
+        'results': analysis_results,
+        'metadata': spec.get('metadata', {})
     }
-
-
-def suggest_analysis(df: pd.DataFrame) -> list:
-    """
-    Suggest possible analyses based on available data columns.
-    
-    Args:
-        df: DataFrame with particle physics data
-        
-    Returns:
-        List of suggested analysis prompts
-    """
-    
-    suggestions = []
-    columns = df.columns.tolist()
-    
-    # Check for common physics variables
-    if any('M' in col or 'mass' in col.lower() for col in columns):
-        suggestions.append("Plot the invariant mass distribution")
-    
-    if any('pt' in col.lower() for col in columns):
-        suggestions.append("Show transverse momentum distribution")
-    
-    if any('eta' in col for col in columns):
-        suggestions.append("Display pseudorapidity distribution")
-    
-    if any('phi' in col for col in columns):
-        suggestions.append("Plot azimuthal angle distribution")
-    
-    # Check for multiple leptons (indicating 4-lepton analysis)
-    lepton_indices = [col[-1] for col in columns if col[:-1] in ['pt', 'eta', 'phi', 'E'] and col[-1].isdigit()]
-    if len(set(lepton_indices)) >= 4:
-        suggestions.append("Analyze four-lepton system kinematics")
-    
-    return suggestions
-
-
-def generate_physics_plot(df: pd.DataFrame, plot_type: str, **kwargs):
-    """
-    Generate common physics plots with proper styling.
-    
-    Args:
-        df: DataFrame with data
-        plot_type: Type of plot (mass, momentum, eta_phi, etc.)
-        **kwargs: Additional parameters for customization
-    """
-    
-    fig, ax = plt.subplots(figsize=(10, 6))
-    
-    if plot_type == 'invariant_mass':
-        mass_col = kwargs.get('mass_col', 'M')
-        bins = kwargs.get('bins', 50)
-        range_min = kwargs.get('range_min', df[mass_col].min())
-        range_max = kwargs.get('range_max', df[mass_col].max())
-        
-        ax.hist(df[mass_col], bins=bins, range=(range_min, range_max), 
-                edgecolor='black', alpha=0.7, color='steelblue')
-        ax.set_xlabel('Four-lepton invariant mass $M_{4\\ell}$ [GeV/c²]', fontsize=12)
-        ax.set_ylabel('Events', fontsize=12)
-        ax.set_title('Four-Lepton Invariant Mass Distribution', fontsize=14, fontweight='bold')
-        ax.grid(True, alpha=0.3)
-        
-        # Add Higgs mass line if in range
-        if range_min <= 125 <= range_max:
-            ax.axvline(125, color='red', linestyle='--', linewidth=2, label='Higgs mass (125 GeV)')
-            ax.legend()
-    
-    elif plot_type == 'momentum':
-        pt_col = kwargs.get('pt_col', 'pt1')
-        bins = kwargs.get('bins', 50)
-        
-        ax.hist(df[pt_col].dropna(), bins=bins, edgecolor='black', alpha=0.7, color='forestgreen')
-        ax.set_xlabel('Transverse momentum $p_T$ [GeV/c]', fontsize=12)
-        ax.set_ylabel('Events', fontsize=12)
-        ax.set_title('Transverse Momentum Distribution', fontsize=14, fontweight='bold')
-        ax.grid(True, alpha=0.3)
-    
-    elif plot_type == 'eta_phi':
-        eta_col = kwargs.get('eta_col', 'eta1')
-        phi_col = kwargs.get('phi_col', 'phi1')
-        
-        scatter = ax.scatter(df[eta_col], df[phi_col], alpha=0.5, s=10)
-        ax.set_xlabel('Pseudorapidity η', fontsize=12)
-        ax.set_ylabel('Azimuthal angle φ [rad]', fontsize=12)
-        ax.set_title('η-φ Distribution', fontsize=14, fontweight='bold')
-        ax.grid(True, alpha=0.3)
-    
-    plt.tight_layout()
-    return fig
