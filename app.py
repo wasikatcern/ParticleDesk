@@ -13,12 +13,7 @@ from io import StringIO
 import os
 import time
 
-# Custom Imports (assuming they are in the parent directory or properly structured)
-# Note: For this to work, ensure your local directory structure correctly exposes:
-# - ai_analysis.py -> analyze_with_ai
-# - root_parser.py -> read_histogram, get_root_file_info, read_tree_to_dataframe
-# - physics_utils.py -> MUON_MASS, ELECTRON_MASS, etc.
-# - examples_data.py -> get_all_examples, get_example
+# Custom Imports (assuming they are structured correctly in the 'utils' package)
 from ai_analysis import analyze_with_ai
 from utils import (
     fetch_data_from_url,
@@ -26,11 +21,12 @@ from utils import (
     load_csv_data,
     get_root_file_info,
     read_tree_to_dataframe,
-    read_histogram, # New import for reading histograms
+    read_histogram, # Correctly imported from utils/__init__.py
     MUON_MASS,
     ELECTRON_MASS,
     HIGGS_MASS_EXPECTED
 )
+# Assuming examples_data is directly in the project root or accessible via 'examples_data' module
 from examples_data import get_all_examples, get_example
 
 # Page configuration
@@ -149,7 +145,7 @@ elif page == "📚 Examples Gallery":
         st.markdown("#### Suggested Data Files")
         data_col1, data_col2 = st.columns(2)
         
-        for i, file_info in enumerate(example['data_files']):
+        for i, file_info in enumerate(example.get('data_files', [])):
             col = data_col1 if i % 2 == 0 else data_col2
             
             with col:
@@ -158,16 +154,18 @@ elif page == "📚 Examples Gallery":
                 # Use a unique key for each button
                 if st.button(f"Load Data: {file_info['name']}", key=f"load_btn_{file_info['name']}"):
                     file_url = file_info['url']
-                    file_extension = file_url.split('.')[-1].lower()
                     
                     with st.spinner(f"Fetching {file_info['name']}..."):
                         try:
-                            if file_extension in ['csv']:
-                                df, _ = fetch_data_from_url(file_url)
-                                load_data_into_state(df, f"Example: {file_info['name']}")
-                            elif file_extension in ['root']:
-                                # This is simplistic and assumes the ROOT file has a predictable TTree name
-                                temp_path, _ = fetch_data_from_url(file_url) 
+                            # Use fetch_data_from_url which returns (data or temp_path, file_type)
+                            data, file_type = fetch_data_from_url(file_url) 
+                            
+                            if file_type == 'csv':
+                                # 'data' is the DataFrame
+                                load_data_into_state(data, f"Example: {file_info['name']}")
+                            elif file_type == 'root':
+                                # 'data' is the temp_path
+                                temp_path = data
                                 root_info = get_root_file_info(temp_path)
                                 
                                 # Try to load the first TTree if available
@@ -264,9 +262,10 @@ elif page == "📤 Upload Data":
                                 # Display the loaded histogram
                                 st.markdown(f"### Histogram: {hist_data['title']}")
                                 if hist_data['type'] == 'TH1':
-                                    fig, ax = plt.subplots()
-                                    ax.hist(hist_data['edges'][:-1], hist_data['edges'], weights=hist_data['values'], histtype='stepfilled', edgecolor='black', alpha=0.7)
-                                    ax.set_title(hist_data['title'])
+                                    fig, ax = plt.subplots(figsize=(10, 6))
+                                    # Use bin centers to plot data from histogram (values are counts, bin_centers are x-values)
+                                    ax.hist(hist_data['bin_centers'], bins=hist_data['edges'], weights=hist_data['values'], histtype='stepfilled', edgecolor='black', alpha=0.7, color='steelblue')
+                                    ax.set_title(hist_data['title'], fontweight='bold')
                                     ax.set_xlabel("Bin Value") 
                                     ax.set_ylabel("Counts")
                                     st.pyplot(fig)
@@ -274,12 +273,16 @@ elif page == "📤 Upload Data":
                                 elif hist_data['type'] == 'TH2':
                                     # Plotting 2D histogram data
                                     fig = go.Figure(data=go.Heatmap(
-                                        z=np.array(hist_data['values']),
-                                        x=np.array(hist_data['x_edges']),
-                                        y=np.array(hist_data['y_edges']),
+                                        z=np.array(hist_data['values']).T, # Transpose is typical for uproot 2D array representation
+                                        x=hist_data['x_edges'],
+                                        y=hist_data['y_edges'],
                                         colorscale='Viridis'
                                     ))
-                                    fig.update_layout(title=hist_data['title'])
+                                    fig.update_layout(
+                                        title=hist_data['title'], 
+                                        xaxis_title="X-Axis Bins", 
+                                        yaxis_title="Y-Axis Bins"
+                                    )
                                     st.plotly_chart(fig, use_container_width=True)
                                 
                                 
@@ -300,13 +303,15 @@ elif page == "📤 Upload Data":
                 try:
                     data, file_type = fetch_data_from_url(url_input)
                     if file_type == 'csv':
+                        # 'data' is the DataFrame
                         load_data_into_state(data, f"URL: {url_input}", "DataFrame")
                     elif file_type == 'root':
-                        # Special handling for ROOT fetched by URL (temp_path is returned)
-                        root_info = get_root_file_info(data) # 'data' is the temp_path
+                        # 'data' is the temp_path
+                        temp_path = data
+                        root_info = get_root_file_info(temp_path) 
                         if root_info['trees']:
                             tree_name = root_info['trees'][0]['name']
-                            df = read_tree_to_dataframe(data, tree_name)
+                            df = read_tree_to_dataframe(temp_path, tree_name)
                             load_data_into_state(df, f"URL: {url_input} (TTree: {tree_name})", "DataFrame")
                         else:
                             st.warning("Fetched ROOT file has no TTree. Use 'Upload Data' to select a Histogram.")
@@ -375,7 +380,8 @@ elif page == "🔍 Data Explorer":
         st.markdown(f"### Histogram Data: {hist_data['title']}")
         if hist_data['type'] == 'TH1':
              fig, ax = plt.subplots(figsize=(10, 6))
-             ax.hist(hist_data['edges'][:-1], hist_data['edges'], weights=hist_data['values'], histtype='stepfilled', edgecolor='black', alpha=0.7, color='steelblue')
+             # Use bin centers to plot data from histogram
+             ax.hist(hist_data['bin_centers'], bins=hist_data['edges'], weights=hist_data['values'], histtype='stepfilled', edgecolor='black', alpha=0.7, color='steelblue')
              ax.set_title(hist_data['title'], fontweight='bold')
              ax.set_xlabel("Bin Value") 
              ax.set_ylabel("Counts")
@@ -386,8 +392,8 @@ elif page == "🔍 Data Explorer":
             # Full 2D plot using Plotly
             fig = go.Figure(data=go.Heatmap(
                 z=np.array(hist_data['values']).T, # Transpose for correct visualization
-                x=hist_data['x_edges'][:-1],
-                y=hist_data['y_edges'][:-1],
+                x=hist_data['x_edges'],
+                y=hist_data['y_edges'],
                 colorscale='Viridis'
             ))
             fig.update_layout(title=hist_data['title'])
@@ -401,6 +407,7 @@ elif page == "🔍 Data Explorer":
 elif page == "🤖 AI Analysis":
     st.markdown('<div class="main-header">🤖 AI-Powered Analysis Assistant</div>', unsafe_allow_html=True)
     
+    # Check for API key in environment
     if not os.getenv('GEMINI_API_KEY'):
         st.warning("⚠️ Gemini API key not configured. Please add your `GEMINI_API_KEY` to your environment variables to use AI analysis features.")
 
@@ -420,6 +427,7 @@ elif page == "🤖 AI Analysis":
                 st.error("Cannot run analysis: GEMINI_API_KEY is not set.")
             else:
                 with st.spinner("🧠 AI is generating and executing the analysis pipeline... This may take a moment."):
+                    # The analyze_with_ai function handles the LLM call and code generation/execution
                     result = analyze_with_ai(user_prompt, df)
                 
                 if result['success']:
@@ -436,7 +444,7 @@ elif page == "🤖 AI Analysis":
                         st.pyplot(result['results']['Plot'])
                     
                     # Check for statistics
-                    if 'Statistics' in result['results']:
+                    if 'Statistics' in result['results'] and not result['results']['Statistics'].empty:
                         st.markdown("#### Statistical Report")
                         st.dataframe(result['results']['Statistics'])
                     
@@ -474,7 +482,6 @@ st.sidebar.markdown("""
 - [CERN Open Data](https://opendata.cern.ch/)
 - [CMS Open Data](https://cms-opendata-guide.web.cern.ch/)
 - [ATLAS Open Data](https://atlas-opendata.web.cern.ch/)
-""")
 
 st.sidebar.markdown("### ℹ️ About")
 st.sidebar.markdown("""
