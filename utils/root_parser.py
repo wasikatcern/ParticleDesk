@@ -6,6 +6,7 @@ Uses uproot library to read ROOT files without requiring ROOT installation.
 import uproot
 import pandas as pd
 import awkward as ak
+import numpy as np
 from typing import List, Dict, Any, Optional
 
 def open_root_file(filepath: str):
@@ -22,7 +23,6 @@ def open_root_file(filepath: str):
         return uproot.open(filepath)
     except Exception as e:
         raise Exception(f"Failed to open ROOT file: {str(e)}")
-
 
 def list_trees(root_file) -> List[str]:
     """
@@ -43,7 +43,6 @@ def list_trees(root_file) -> List[str]:
     except Exception as e:
         raise Exception(f"Failed to list trees: {str(e)}")
 
-
 def get_tree_branches(root_file, tree_name: str) -> List[str]:
     """
     Get list of branches in a specific tree.
@@ -59,43 +58,35 @@ def get_tree_branches(root_file, tree_name: str) -> List[str]:
         tree = root_file[tree_name]
         return tree.keys()
     except Exception as e:
-        raise Exception(f"Failed to get branches: {str(e)}")
+        raise Exception(f"Failed to get branches for tree '{tree_name}': {str(e)}")
 
-
-def read_tree_to_dataframe(root_file_path: str, tree_name: str, max_entries: Optional[int] = None) -> pd.DataFrame:
+def read_tree_to_dataframe(filepath: str, tree_name: str, branches: Optional[List[str]] = None, max_entries: Optional[int] = None) -> pd.DataFrame:
     """
-    Read a TTree from a ROOT file into a pandas DataFrame, flattening awkward arrays.
+    Read TTree data into a pandas DataFrame.
     
     Args:
-        root_file_path: Path to ROOT file
+        filepath: Path to ROOT file
         tree_name: Name of the TTree
+        branches: List of branches to read (if None, read all)
         max_entries: Maximum number of entries to read
         
     Returns:
         DataFrame with the tree data
     """
     try:
-        with uproot.open(root_file_path) as root_file:
-            tree = root_file[tree_name]
-            
-            # Read branches, excluding variable-length arrays that cannot be flattened easily
-            # We explicitly read only the flat branches to ensure compatibility with pandas/AI analysis
-            branches_to_read = [name for name, branch in tree.items() if not branch.is_array]
-            
-            if max_entries is None:
-                arrays = tree.arrays(branches_to_read, library="pd")
-                # Using library="pd" directly avoids the explicit awkward-to-pandas conversion for flat trees
+        with uproot.open(filepath)[tree_name] as tree:
+            if branches:
+                arrays = tree.arrays(branches, entry_stop=max_entries, library="ak")
             else:
-                arrays = tree.arrays(branches_to_read, entry_stop=max_entries, library="pd")
-
-            # This assumes the tree is flat. For complex trees, the user must select a TTree
-            # that is suitable for flat analysis or the AI must be aware of the nested structure.
-            return arrays
+                arrays = tree.arrays(entry_stop=max_entries, library="ak")
         
+        # Convert to pandas, handling nested arrays
+        df = ak.to_dataframe(arrays)
+        
+        return df
     except Exception as e:
         raise Exception(f"Failed to read tree to DataFrame: {str(e)}")
 
-# --- NEW FUNCTION FOR HISTOGRAMS ---
 def read_histogram(filepath: str, hist_name: str) -> Dict[str, Any]:
     """
     Read a TH1 or TH2 histogram from a ROOT file.
@@ -105,33 +96,40 @@ def read_histogram(filepath: str, hist_name: str) -> Dict[str, Any]:
         hist_name: Name of the histogram
         
     Returns:
-        Dictionary containing histogram data for plotting/analysis.
+        Dictionary containing histogram data (values, edges, title, type)
     """
     try:
         with uproot.open(filepath) as root_file:
             hist = root_file[hist_name]
             
-            if 'TH1' in hist.classname:
-                values, edges = hist.to_numpy()
+            # Check histogram class type
+            classname = hist.classname
+            
+            if 'TH1' in classname:
+                # 1D Histogram
+                values, edges = hist.numpy()
                 return {
+                    'name': hist_name,
+                    'title': hist.title if hist.title else hist_name,
                     'type': 'TH1',
                     'values': values.tolist(),
                     'edges': edges.tolist(),
-                    'name': hist_name,
-                    'title': hist.title if hasattr(hist, 'title') and hist.title else hist_name
+                    'bin_centers': ((edges[:-1] + edges[1:]) / 2).tolist()
                 }
-            elif 'TH2' in hist.classname:
+            elif 'TH2' in classname:
+                # 2D Histogram
                 values, x_edges, y_edges = hist.to_numpy()
                 return {
+                    'name': hist_name,
+                    'title': hist.title if hist.title else hist_name,
                     'type': 'TH2',
                     'values': values.tolist(),
                     'x_edges': x_edges.tolist(),
                     'y_edges': y_edges.tolist(),
-                    'name': hist_name,
-                    'title': hist.title if hasattr(hist, 'title') and hist.title else hist_name
                 }
             else:
-                raise ValueError(f"Object '{hist_name}' is not a supported histogram type (TH1/TH2).")
+                raise ValueError(f"Object '{hist_name}' is of type {classname}, not a supported histogram (TH1/TH2).")
+
     except Exception as e:
         raise Exception(f"Failed to read histogram '{hist_name}': {str(e)}")
 
