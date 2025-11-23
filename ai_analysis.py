@@ -26,26 +26,28 @@ gemini_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 def plot_histogram_internal(df: pd.DataFrame, ax: plt.Axes, plot_type: str, **kwargs) -> Dict[str, Any]:
     """Helper to run the plotting logic based on type."""
     
+    # Get the column from kwargs or use a default fallback (M for invariant mass)
+    col = kwargs.get('column', 'M_4l')
+    
     if plot_type == 'invariant_mass':
-        # FIX: Use 'column' key from JSON schema (passed via **kwargs)
-        # Fallback to 'M_4l' if no column is specified by the AI.
-        col = kwargs.get('column', 'M_4l')
         
-        # Check if the requested column exists, and if not, try common alternatives
-        if col not in df.columns:
-            # Handle common naming mismatches for 4-lepton mass
-            if col in ['M_4l', 'M'] and 'M' in df.columns:
-                col = 'M'
-            elif col in ['M_4l', 'M'] and 'M_4l' in df.columns:
-                col = 'M_4l'
-            # If the column still isn't found, we must abort
-            elif col not in df.columns:
+        # Map common names to the actual column name 'M'
+        if col in ['M_4l', 'M', 'm4l']:
+            col = 'M' # Use the actual column name for 4-lepton mass
+        elif col not in df.columns:
+            # Fallback for Z-boson masses if M is missing (though M should exist)
+            if 'mZ1' in df.columns and col == 'mZ1':
+                col = 'mZ1'
+            elif 'mZ2' in df.columns and col == 'mZ2':
+                col = 'mZ2'
+            else:
+                # Column not found, raise an error message
                 requested_col = kwargs.get('column', 'M_4l')
                 ax.text(0.5, 0.5, f"Column '{requested_col}' not found in DataFrame.", transform=ax.transAxes, ha='center', va='center')
                 ax.set_title('Analysis Column Not Found')
                 return {'result': f"Column '{requested_col}' not found in DataFrame. Please check the available columns."}
         
-        # Use provided range or infer default, but ensure range is always passed to hist
+        
         # Safely determine min/max, handling potential NaNs in small datasets
         data_series = df[col].dropna()
         if data_series.empty:
@@ -53,9 +55,17 @@ def plot_histogram_internal(df: pd.DataFrame, ax: plt.Axes, plot_type: str, **kw
             ax.set_title(f'{col} Distribution (Empty)')
             return {'result': 'No data available to plot for this column.'}
             
-        default_min = data_series.min() if not math.isnan(data_series.min()) else 0
-        default_max = data_series.max() if not math.isnan(data_series.max()) else 1000
-        
+        # Set default ranges based on the column type if not provided
+        if col == 'M':
+            # Typical range for Higgs search
+            default_min, default_max = 80, 200
+        elif col in ['mZ1', 'mZ2']:
+            # Typical range for Z boson mass
+            default_min, default_max = 50, 120
+        else:
+            default_min, default_max = data_series.min() if not math.isnan(data_series.min()) else 0, \
+                                       data_series.max() if not math.isnan(data_series.max()) else 1000
+
         range_min = kwargs.get('range_min', default_min)
         range_max = kwargs.get('range_max', default_max)
         bins = kwargs.get('bins', 50)
@@ -77,9 +87,9 @@ def plot_histogram_internal(df: pd.DataFrame, ax: plt.Axes, plot_type: str, **kw
                 edgecolor='black', alpha=0.7, color='steelblue')
         
         # Use descriptive label based on the actual column name
-        if col in ['M_4l', 'M']:
+        if col == 'M':
              xlabel = 'Four-lepton invariant mass $M_{4\\ell}$ [GeV/c$^2$]'
-             title = 'Four-Lepton Invariant Mass Distribution'
+             title = 'Four-Lepton Invariant Mass Distribution (H→4ℓ)'
         elif col in ['mZ1', 'mZ2']:
              xlabel = f'Dilepton invariant mass ${col}$ [GeV/c$^2$]'
              title = f'Dilepton Invariant Mass Distribution ({col})'
@@ -92,8 +102,8 @@ def plot_histogram_internal(df: pd.DataFrame, ax: plt.Axes, plot_type: str, **kw
         ax.set_title(title, fontsize=14, fontweight='bold')
         ax.grid(True, alpha=0.3)
         
-        # Add Higgs mass line ONLY if plotting the 4-lepton mass (M_4l or M)
-        if col in ['M_4l', 'M'] and range_min <= 125 <= range_max:
+        # Add Higgs mass line ONLY if plotting the 4-lepton mass (M)
+        if col == 'M' and range_min <= 125 <= range_max:
             ax.axvline(125, color='red', linestyle='--', linewidth=2, label='Higgs mass (125 GeV)')
             ax.legend()
         
@@ -199,8 +209,9 @@ def analyze_with_ai(user_prompt: str, df: pd.DataFrame) -> dict:
         f"DATA COLUMNS: {data_info['columns']}\n"
         f"DATA SHAPE: {data_info['shape']}\n"
         f"DATA HEAD: {data_info['head']}\n"
-        "COMMON COLUMNS (In this Dataset): M (four-lepton mass), mZ1/mZ2 (dilepton mass), pt1/pt2/pt3/pt4 (lepton transverse momenta), eta1/eta2/eta3/eta4 (lepton pseudorapidity), phi1/phi2/phi3/phi4 (lepton azimuthal angle).\n"
-        "Higgs mass is expected at 125 GeV. If asked to plot the Higgs mass, ensure the range includes 125 GeV, and use column 'M' (the four-lepton mass).\n"
+        "COMMON COLUMNS (In this Dataset): M (four-lepton mass), mZ1/mZ2 (dilepton mass). Use 'M' for the four-lepton mass.\n"
+        "Higgs mass is expected at 125 GeV. If asked to plot the Higgs mass, ensure the range includes 125 GeV, and use column 'M'.\n"
+        "CRITICAL: The pipeline must contain at least one step if an analysis/plot is requested."
     )
     
     # 2. Define the output schema for structured JSON response
@@ -232,19 +243,15 @@ def analyze_with_ai(user_prompt: str, df: pd.DataFrame) -> dict:
                             description="Arguments for the function call. Only include arguments relevant to the function.",
                             properties={
                                 # General Plotting/Filtering Args
-                                "column": types.Schema(type=types.Type.STRING, description="The primary column name for the operation (e.g., 'M', 'mZ1', 'pt1')."),
+                                "column": types.Schema(type=types.Type.STRING, description="The primary column name for the operation (e.g., 'M', 'mZ1', 'pt1'). REQUIRED for plots/filters/stats."),
                                 "range_min": types.Schema(type=types.Type.NUMBER, description="Minimum value for plot range or filtering cut (GeV)."),
                                 "range_max": types.Schema(type=types.Type.NUMBER, description="Maximum value for plot range or filtering cut (GeV)."),
                                 "bins": types.Schema(type=types.Type.INTEGER, description="Number of histogram bins (if plotting)."),
 
-                                # Specific Plotting Args (now generally covered by 'column', but kept for clarity if model uses old functions)
+                                # Specific Plotting Args
                                 "pt_col": types.Schema(type=types.Type.STRING, description="Transverse momentum column name (e.g., 'pt1'). Used for 'plot_momentum'."),
                                 "eta_col": types.Schema(type=types.Type.STRING, description="Pseudorapidity column name (e.g., 'eta1'). Used for 'plot_eta_phi'."),
                                 "phi_col": types.Schema(type=types.Type.STRING, description="Azimuthal angle column name (e.g., 'phi1'). Used for 'plot_eta_phi'."),
-
-                                # Specific Calculation Args
-                                "mass_type": types.Schema(type=types.Type.STRING, description="Type of invariant mass to calculate ('2l', '4l', or 'mt')."),
-                                "cols": types.Schema(type=types.Type.ARRAY, items={"type": types.Type.STRING}, description="List of columns required for mass calculation."),
                             }
                         ),
                     },
@@ -270,7 +277,7 @@ def analyze_with_ai(user_prompt: str, df: pd.DataFrame) -> dict:
                     model='gemini-2.5-flash',
                     contents=full_query,
                     config=types.GenerateContentConfig(
-                        system_instruction="You are an expert physicist and data analyst. Generate a structured JSON object containing an analysis pipeline to fulfill the user's request. Only use the functions defined in the schema. Do not output any text outside the JSON object.",
+                        system_instruction="You are an expert physicist and data analyst. Generate a structured JSON object containing an analysis pipeline to fulfill the user's request. **For plotting invariant mass, ALWAYS use the function 'plot_invariant_mass' and include the argument 'column'**. Do not output any text outside the JSON object.",
                         response_mime_type="application/json",
                         response_schema=response_schema
                     ),
@@ -280,7 +287,6 @@ def analyze_with_ai(user_prompt: str, df: pd.DataFrame) -> dict:
                 if attempt < max_retries - 1:
                     delay = base_delay * (2 ** attempt)
                     # Suppress logging retries to console as requested
-                    # print(f"API call failed, retrying in {delay}s...")
                     plt.pause(delay) # Use plt.pause for non-blocking delay in Streamlit context
                 else:
                     raise e # Re-raise the exception on the last attempt
@@ -373,7 +379,3 @@ def analyze_with_ai(user_prompt: str, df: pd.DataFrame) -> dict:
 if __name__ == '__main__':
     # This block is for local testing only
     print("AI Analysis Assistant Module Loaded.")
-    # Example usage:
-    # df = pd.DataFrame({'M': np.random.normal(125, 5, 1000), 'mZ1': np.random.normal(91, 2, 1000)})
-    # result = analyze_with_ai("Plot the mZ1 distributions around 91 GeV", df)
-    # print(json.dumps(result, indent=4))
