@@ -243,7 +243,7 @@ def analyze_with_ai(user_prompt: str, df: pd.DataFrame) -> dict:
                             description="Arguments for the function call. Only include arguments relevant to the function.",
                             properties={
                                 # General Plotting/Filtering Args
-                                "column": types.Schema(type=types.Type.STRING, description="The primary column name for the operation (e.g., 'M', 'mZ1', 'pt1'). REQUIRED for plots/filters/stats."),
+                                "column": types.Schema(type=types.Type.STRING, description="The primary column name for the operation (e.g., 'M', 'mZ1', 'pt1'). REQUIRED for plots/filters/stats. Use 'M' for the four-lepton invariant mass."),
                                 "range_min": types.Schema(type=types.Type.NUMBER, description="Minimum value for plot range or filtering cut (GeV)."),
                                 "range_max": types.Schema(type=types.Type.NUMBER, description="Maximum value for plot range or filtering cut (GeV)."),
                                 "bins": types.Schema(type=types.Type.INTEGER, description="Number of histogram bins (if plotting)."),
@@ -273,11 +273,17 @@ def analyze_with_ai(user_prompt: str, df: pd.DataFrame) -> dict:
 
         for attempt in range(max_retries):
             try:
+                # CRITICAL: Force the model to generate the required arguments
                 response = gemini_client.models.generate_content(
                     model='gemini-2.5-flash',
                     contents=full_query,
                     config=types.GenerateContentConfig(
-                        system_instruction="You are an expert physicist and data analyst. Generate a structured JSON object containing an analysis pipeline to fulfill the user's request. **For plotting invariant mass, ALWAYS use the function 'plot_invariant_mass' and include the argument 'column'**. Do not output any text outside the JSON object.",
+                        system_instruction=(
+                            "You are an expert physicist and data analyst. Generate a structured JSON object containing an analysis pipeline to fulfill the user's request. "
+                            "CRITICAL: When plotting four-lepton invariant mass, ALWAYS use the function 'plot_invariant_mass' and explicitly include the arguments: "
+                            "'column': 'M', 'range_min', 'range_max', and 'bins' with the values requested by the user. "
+                            "Do not output any text outside the JSON object. Ensure the JSON is perfectly valid."
+                        ),
                         response_mime_type="application/json",
                         response_schema=response_schema
                     ),
@@ -297,7 +303,11 @@ def analyze_with_ai(user_prompt: str, df: pd.DataFrame) -> dict:
             # The model returns the JSON string in response.text
             analysis_plan = json.loads(response.text)
         except json.JSONDecodeError:
-            return {'success': False, 'error': f"AI returned malformed JSON: {response.text}"}
+            # Improved error logging to capture the bad JSON
+            print(f"--- JSON DECODE ERROR ---")
+            print(f"Raw AI Response: {response.text[:500]}...")
+            print(f"-------------------------")
+            return {'success': False, 'error': f"AI returned malformed JSON: Check console for raw response."}
         
         # 5. Execute the pipeline
         pipeline_results = []
@@ -319,6 +329,8 @@ def analyze_with_ai(user_prompt: str, df: pd.DataFrame) -> dict:
                     'plot_eta_phi': 'eta_phi',
                 }
                 
+                # IMPORTANT: We need to pass the figure object back for Streamlit to display.
+                # The plot_histogram_internal function modifies the 'ax' object in place.
                 result = plot_histogram_internal(current_df, ax, plot_type_map[function_name], **args)
                 
                 pipeline_results.append({
