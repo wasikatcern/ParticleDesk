@@ -8,7 +8,6 @@ import pandas as pd
 import awkward as ak
 from typing import List, Dict, Any, Optional
 
-
 def open_root_file(filepath: str):
     """
     Open a ROOT file and return the file object.
@@ -63,36 +62,78 @@ def get_tree_branches(root_file, tree_name: str) -> List[str]:
         raise Exception(f"Failed to get branches: {str(e)}")
 
 
-def read_tree_to_dataframe(root_file, tree_name: str, 
-                          branches: Optional[List[str]] = None,
-                          max_entries: Optional[int] = None) -> pd.DataFrame:
+def read_tree_to_dataframe(root_file_path: str, tree_name: str, max_entries: Optional[int] = None) -> pd.DataFrame:
     """
-    Read a TTree from ROOT file into pandas DataFrame.
+    Read a TTree from a ROOT file into a pandas DataFrame, flattening awkward arrays.
     
     Args:
-        root_file: uproot file object
-        tree_name: Name of the tree to read
-        branches: List of branches to read (None = all)
+        root_file_path: Path to ROOT file
+        tree_name: Name of the TTree
         max_entries: Maximum number of entries to read
         
     Returns:
         DataFrame with the tree data
     """
     try:
-        tree = root_file[tree_name]
+        with uproot.open(root_file_path) as root_file:
+            tree = root_file[tree_name]
+            
+            # Read branches, excluding variable-length arrays that cannot be flattened easily
+            # We explicitly read only the flat branches to ensure compatibility with pandas/AI analysis
+            branches_to_read = [name for name, branch in tree.items() if not branch.is_array]
+            
+            if max_entries is None:
+                arrays = tree.arrays(branches_to_read, library="pd")
+                # Using library="pd" directly avoids the explicit awkward-to-pandas conversion for flat trees
+            else:
+                arrays = tree.arrays(branches_to_read, entry_stop=max_entries, library="pd")
+
+            # This assumes the tree is flat. For complex trees, the user must select a TTree
+            # that is suitable for flat analysis or the AI must be aware of the nested structure.
+            return arrays
         
-        # Get data as awkward arrays
-        if branches:
-            arrays = tree.arrays(branches, entry_stop=max_entries, library="ak")
-        else:
-            arrays = tree.arrays(entry_stop=max_entries, library="ak")
-        
-        # Convert to pandas, handling nested arrays
-        df = ak.to_dataframe(arrays)
-        
-        return df
     except Exception as e:
         raise Exception(f"Failed to read tree to DataFrame: {str(e)}")
+
+# --- NEW FUNCTION FOR HISTOGRAMS ---
+def read_histogram(filepath: str, hist_name: str) -> Dict[str, Any]:
+    """
+    Read a TH1 or TH2 histogram from a ROOT file.
+    
+    Args:
+        filepath: Path to ROOT file
+        hist_name: Name of the histogram
+        
+    Returns:
+        Dictionary containing histogram data for plotting/analysis.
+    """
+    try:
+        with uproot.open(filepath) as root_file:
+            hist = root_file[hist_name]
+            
+            if 'TH1' in hist.classname:
+                values, edges = hist.to_numpy()
+                return {
+                    'type': 'TH1',
+                    'values': values.tolist(),
+                    'edges': edges.tolist(),
+                    'name': hist_name,
+                    'title': hist.title if hasattr(hist, 'title') and hist.title else hist_name
+                }
+            elif 'TH2' in hist.classname:
+                values, x_edges, y_edges = hist.to_numpy()
+                return {
+                    'type': 'TH2',
+                    'values': values.tolist(),
+                    'x_edges': x_edges.tolist(),
+                    'y_edges': y_edges.tolist(),
+                    'name': hist_name,
+                    'title': hist.title if hasattr(hist, 'title') and hist.title else hist_name
+                }
+            else:
+                raise ValueError(f"Object '{hist_name}' is not a supported histogram type (TH1/TH2).")
+    except Exception as e:
+        raise Exception(f"Failed to read histogram '{hist_name}': {str(e)}")
 
 
 def get_root_file_info(filepath: str) -> Dict[str, Any]:
