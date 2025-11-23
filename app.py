@@ -12,7 +12,7 @@ from io import StringIO
 import os
 
 # Import custom modules
-from examples_data import get_all_examples, get_example, get_example_ids
+from examples import get_all_examples, get_example, get_example_ids, get_example_titles
 from utils import (
     fetch_data_from_url,
     download_cern_dataset,
