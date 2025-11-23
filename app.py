@@ -13,21 +13,23 @@ from io import StringIO
 import os
 import time
 
-# Custom Imports (assuming they are structured correctly in the 'utils' package)
+# --- Custom Modules for Analysis and Data Handling ---
 from ai_analysis import analyze_with_ai
+# CORRECTED IMPORT PATH: Now correctly imports from examples/examples_data.py
+from examples.examples_data import get_all_examples, get_example 
 from utils import (
     fetch_data_from_url,
     download_cern_dataset,
     load_csv_data,
     get_root_file_info,
     read_tree_to_dataframe,
-    read_histogram, # Correctly imported from utils/__init__.py
+    read_histogram, # For loading pre-calculated histograms from ROOT files
     MUON_MASS,
     ELECTRON_MASS,
     HIGGS_MASS_EXPECTED
 )
-# Assuming examples_data is directly in the project root or accessible via 'examples_data' module
-from examples_data import get_all_examples, get_example
+# ---------------------------------------------------
+
 
 # Page configuration
 st.set_page_config(
