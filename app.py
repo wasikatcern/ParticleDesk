@@ -11,25 +11,22 @@ import plotly.express as px
 import plotly.graph_objects as go
 from io import StringIO
 import os
-import time
 
-# --- Custom Modules for Analysis and Data Handling ---
-from ai_analysis import analyze_with_ai
-# CORRECTED IMPORT PATH: Now correctly imports from examples/examples_data.py
-from examples.examples_data import get_all_examples, get_example 
+# Import custom modules
+from examples import get_all_examples, get_example
 from utils import (
     fetch_data_from_url,
     download_cern_dataset,
     load_csv_data,
+    open_root_file,
     get_root_file_info,
     read_tree_to_dataframe,
-    read_histogram, # For loading pre-calculated histograms from ROOT files
     MUON_MASS,
     ELECTRON_MASS,
     HIGGS_MASS_EXPECTED
 )
-# ---------------------------------------------------
-
+# Import the AI analysis function
+from ai_analysis import analyze_with_ai 
 
 # Page configuration
 st.set_page_config(
@@ -58,424 +55,244 @@ st.markdown("""
         background-color: #f0f2f6;
         padding: 1rem;
         border-radius: 0.5rem;
-        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        border: 1px solid #ddd;
     }
-    .stSpinner > div > div {
-        color: #1f77b4 !important;
-    }
-    /* Streamlit components styling */
-    .stButton>button {
-        background-color: #28a745;
-        color: white;
-        font-weight: bold;
-    }
-    .stTabs [data-baseweb="tab-list"] button [data-testid="stMarkdownContainer"] p {
+    .stTabs [data-baseweb="tab-list"] button {
+        background-color: #f0f2f6;
+        color: #333;
+        border-radius: 0.5rem 0.5rem 0 0;
         font-size: 1.1rem;
-        font-weight: 600;
     }
 </style>
 """, unsafe_allow_html=True)
 
 
-# Initialize session state for data storage
-if 'current_data' not in st.session_state:
-    st.session_state.current_data = None  # Stores pandas DataFrame (for event-level analysis)
-if 'current_root_object' not in st.session_state:
-    st.session_state.current_root_object = None # Stores histogram/other pre-calculated data (for direct plotting)
-if 'data_source' not in st.session_state:
-    st.session_state.data_source = "None"
-if 'current_data_type' not in st.session_state:
-    st.session_state.current_data_type = "None"
+# --- State Initialization ---
+if 'df' not in st.session_state:
+    st.session_state.df = None
+if 'file_name' not in st.session_state:
+    st.session_state.file_name = "N/A"
+if 'file_type' not in st.session_state:
+    st.session_state.file_type = "N/A"
 
 
-def load_data_into_state(data, source_name, data_type="DataFrame", root_object=None):
-    """Helper function to set session state for loaded data."""
-    if data_type == "DataFrame":
-        st.session_state.current_data = data
-        st.session_state.current_root_object = None
-    elif data_type == "ROOT_Object":
-        st.session_state.current_data = None
-        st.session_state.current_root_object = root_object
-    
-    st.session_state.data_source = source_name
-    st.session_state.current_data_type = data_type
-    st.success(f"✅ Data loaded successfully from: **{source_name}**")
+# --- Helper Functions for Data Loading ---
+
+def set_dataframe(df: pd.DataFrame, file_name: str, file_type: str):
+    """Set the main DataFrame and file metadata in session state."""
+    st.session_state.df = df
+    st.session_state.file_name = file_name
+    st.session_state.file_type = file_type
+    st.success(f"Data loaded successfully: {file_name} ({len(df)} rows)")
+
+def handle_local_upload(uploaded_file):
+    """Handle Streamlit file upload."""
+    if uploaded_file.name.endswith('.csv'):
+        df = pd.read_csv(uploaded_file)
+        set_dataframe(df, uploaded_file.name, 'CSV')
+    else:
+        st.error("Unsupported file format. Please upload a .csv file.")
+
+def handle_cern_download(record_id, filename):
+    """Handle CERN Open Data download."""
+    try:
+        filepath = download_cern_dataset(record_id, filename)
+        if filename.endswith('.csv'):
+            df = load_csv_data(filepath)
+            set_dataframe(df, filename, 'CSV')
+        elif filename.endswith('.root'):
+            # For simplicity, we just show the root file info here, 
+            # the user will have to manually select the tree in the analysis tab
+            info = get_root_file_info(filepath)
+            st.session_state.root_info = info
+            st.session_state.filepath = filepath
+            st.success(f"ROOT file downloaded: {filename}. Go to the 'ROOT File Analysis' tab to process trees.")
+        else:
+            st.error("Unsupported file type from CERN.")
+    except Exception as e:
+        st.error(f"Download Error: {e}")
+
+def handle_example_load(example_id):
+    """Load data from a curated example."""
+    example = get_example(example_id)
+    if example.get("data_files"):
+        first_file = example["data_files"][0]
+        url = first_file["url"]
+        name = first_file["name"]
+        
+        # Check if file is already downloaded/loaded
+        if st.session_state.file_name == name and st.session_state.df is not None:
+             st.info(f"Example data '{name}' is already loaded.")
+             return
+             
+        st.info(f"Loading example data: {name} from {url}...")
+        try:
+            df, file_type = fetch_data_from_url(url)
+            set_dataframe(df, name, file_type.upper())
+        except Exception as e:
+            st.error(f"Failed to load example data: {e}")
 
 
-# --- Sidebar Navigation ---
+# --- Sidebar ---
 st.sidebar.title("⚛️ ParticleDesk")
-page = st.sidebar.radio("Navigation", ["🏠 Home", "📚 Examples Gallery", "📤 Upload Data", "🔍 Data Explorer", "🤖 AI Analysis"])
+st.sidebar.subheader("Data Management")
+
+# --- Example Gallery Tab (Sidebar) ---
+st.sidebar.markdown("### 📚 Examples Gallery")
+example_ids = list(get_all_examples().keys())
+selected_example = st.sidebar.selectbox("Select a CERN Open Data Example:", 
+                                        ['-- Select an Example --'] + example_ids,
+                                        format_func=lambda x: get_example(x).get('title', x))
+if selected_example != '-- Select an Example --':
+    if st.sidebar.button(f"Load '{get_example(selected_example)['title']}'"):
+        handle_example_load(selected_example)
+
 st.sidebar.markdown("---")
 
-# --- Home Page ---
-if page == "🏠 Home":
-    st.markdown('<div class="main-header">Welcome to ParticleDesk</div>', unsafe_allow_html=True)
-    st.markdown("""
-    <div class="info-box">
-        <p><strong>Platform Status:</strong> Ready for Analysis</p>
-        <p><strong>Current Data:</strong> <span style="font-weight: bold;">{}</span> (Type: <span style="font-weight: bold;">{}</span>)</p>
-        <p>This tool is designed for interactive particle physics data analysis, leveraging Python's scientific stack (Pandas, Numpy, Uproot) and the Gemini LLM for AI-powered assistance. Explore CERN Open Data and run complex analysis pipelines with natural language commands.</p>
-    </div>
-    """.format(st.session_state.data_source, st.session_state.current_data_type), unsafe_allow_html=True)
+# --- Upload Data Tab (Sidebar) ---
+st.sidebar.markdown("### 📤 Upload Data")
+uploaded_file = st.sidebar.file_uploader("Upload CSV File:", type=["csv"])
+if uploaded_file is not None:
+    handle_local_upload(uploaded_file)
     
-    st.markdown("### Quick Start")
+st.sidebar.markdown("---")
+
+# --- Main App Body ---
+st.title("ParticleDesk: AI-Powered Particle Physics Analysis")
+st.markdown(f"**Loaded Dataset:** `{st.session_state.file_name}` (`{st.session_state.file_type}`)", unsafe_allow_html=True)
+df = st.session_state.df
+
+# --- Tabs ---
+tab_eda, tab_ai_analysis = st.tabs(["📊 Exploratory Data Analysis (EDA)", "🤖 AI Analysis Assistant"])
+
+
+# --- AI Analysis Tab ---
+with tab_ai_analysis:
+    st.markdown("## 🤖 AI Analysis Assistant")
     st.markdown("""
-    1. **📚 Examples Gallery**: Load a curated dataset like the Higgs $H \to 4\ell$ or Z Boson.
-    2. **📤 Upload Data**: Upload your own CSV or ROOT file, or fetch a dataset URL.
-    3. **🤖 AI Analysis**: Ask natural language questions like: 
-       * *"Calculate the $M_{\mu\mu}$ invariant mass for the two highest $p_T$ muons and plot the distribution between 60 and 120 GeV."*
-       * *"Apply a $p_T$ cut of 25 GeV on all leptons and show the resulting event count."*
+        Use the power of a large language model to analyze your particle physics data. 
+        Describe your analysis goal (e.g., "Plot the invariant mass of the four-lepton system and look for the Higgs boson peak around 125 GeV") and the AI will generate the code, perform the analysis, and explain the results.
     """)
-    
-# --- Examples Gallery Page ---
-elif page == "📚 Examples Gallery":
-    st.markdown('<div class="main-header">📚 Examples Gallery</div>', unsafe_allow_html=True)
-    
-    examples = get_all_examples()
-    example_options = {v['title']: k for k, v in examples.items()}
-    
-    selected_title = st.selectbox("Choose a Standard Model or Higgs Example:", list(example_options.keys()))
-    
-    if selected_title:
-        example_id = example_options[selected_title]
-        example = get_example(example_id)
-        
-        st.markdown(f"### {example['title']}")
-        st.markdown(f"**Source:** [{example['source']}]({example['source']})")
-        st.markdown(example['description'])
-        
-        st.markdown("#### Suggested Data Files")
-        data_col1, data_col2 = st.columns(2)
-        
-        for i, file_info in enumerate(example.get('data_files', [])):
-            col = data_col1 if i % 2 == 0 else data_col2
-            
-            with col:
-                st.markdown(f"**{file_info['name']}**")
-                
-                # Use a unique key for each button
-                if st.button(f"Load Data: {file_info['name']}", key=f"load_btn_{file_info['name']}"):
-                    file_url = file_info['url']
-                    
-                    with st.spinner(f"Fetching {file_info['name']}..."):
-                        try:
-                            # Use fetch_data_from_url which returns (data or temp_path, file_type)
-                            data, file_type = fetch_data_from_url(file_url) 
-                            
-                            if file_type == 'csv':
-                                # 'data' is the DataFrame
-                                load_data_into_state(data, f"Example: {file_info['name']}")
-                            elif file_type == 'root':
-                                # 'data' is the temp_path
-                                temp_path = data
-                                root_info = get_root_file_info(temp_path)
-                                
-                                # Try to load the first TTree if available
-                                if root_info['trees']:
-                                    tree_name = root_info['trees'][0]['name']
-                                    df = read_tree_to_dataframe(temp_path, tree_name)
-                                    load_data_into_state(df, f"Example: {file_info['name']} (TTree: {tree_name})")
-                                else:
-                                    st.warning("Could not automatically find a TTree in the example ROOT file. Please use the 'Upload Data' page for manual TTree/Histogram selection.")
-                                    
-                        except Exception as e:
-                            st.error(f"Failed to load example data: {str(e)}")
 
-        st.markdown("#### Suggested AI Prompts")
-        for prompt in example['suggested_prompts']:
-            st.code(prompt)
+    if df is None:
+        st.warning("Please load a dataset first (via 'Upload Data' or 'Examples Gallery') to use the AI assistant.")
+    else:
+        st.markdown(f"""
+            ### Dataset Context: `{st.session_state.file_name}`
+            The DataFrame has **{len(df)}** rows and **{len(df.columns)}** columns. 
+            The available columns are: `{', '.join(df.columns.tolist())}`
+        """)
 
-
-# --- Upload Data Page (Enhanced for ROOT) ---
-elif page == "📤 Upload Data":
-    st.markdown('<div class="main-header">📤 Upload or Fetch Data</div>', unsafe_allow_html=True)
-    st.markdown("Upload your own data files or provide a URL to fetch data from online sources.")
-    
-    upload_tab, url_tab, cern_tab = st.tabs(["📁 Upload File", "🔗 From URL", "🌐 CERN Dataset"])
-    
-    with upload_tab:
-        st.markdown("### Upload Data File")
-        st.markdown("Supported formats: CSV, ROOT")
-        uploaded_file = st.file_uploader(
-            "Choose a file", 
-            type=['csv', 'root'], 
-            help="Upload CSV or ROOT format particle physics data"
+        user_prompt = st.text_area(
+            "Enter your analysis request:",
+            height=150,
+            value="Plot the histogram of the four-lepton invariant mass (column M_4l) from 100 to 150 GeV in 50 bins. Label the expected Higgs mass at 125 GeV."
         )
-        
-        if uploaded_file is not None:
-            file_extension = uploaded_file.name.split('.')[-1].lower()
-            # Use a time-based unique path to avoid conflicts
-            temp_path = f'/tmp/{int(time.time())}_{uploaded_file.name}' 
-            
-            try:
-                if file_extension == 'csv':
-                    df = pd.read_csv(uploaded_file)
-                    load_data_into_state(df, uploaded_file.name, "DataFrame")
-                    st.markdown(f"**Events**: {len(df)}")
-                    st.markdown(f"**Columns**: {', '.join(df.columns.tolist())}")
-                    st.dataframe(df.head(10))
-                    
-                elif file_extension == 'root':
-                    # Save ROOT file temporarily for uproot processing
-                    with open(temp_path, 'wb') as f:
-                        f.write(uploaded_file.getbuffer())
-                    
-                    st.success(f"✅ Saved ROOT file temporarily: {uploaded_file.name}")
-                    
-                    root_info = get_root_file_info(temp_path)
-                    
-                    st.markdown("### 🔍 ROOT File Contents")
-                    trees = [t['name'] for t in root_info['trees']]
-                    histograms = [h['name'] for h in root_info['histograms']]
-                    st.markdown(f"**TTrees found**: {', '.join(trees) if trees else 'None'}")
-                    st.markdown(f"**Histograms found**: {', '.join(histograms) if histograms else 'None'}")
-                    
-                    
-                    # --- Selection Logic for TTree vs. Histogram ---
-                    
-                    selection_col, button_col = st.columns([3, 1])
 
-                    action = selection_col.radio(
-                        "Select an object to load for analysis:",
-                        ["Load TTree (for DataFrame Analysis)", "Load Histogram (for Plotting)"],
-                        key=f"root_load_action_{uploaded_file.name}"
-                    )
-                    
-                    selected_object = None
-                    if action == "Load TTree (for DataFrame Analysis)" and trees:
-                        selected_object = selection_col.selectbox("Choose a TTree to load:", trees)
-                    elif action == "Load Histogram (for Plotting)" and histograms:
-                        selected_object = selection_col.selectbox("Choose a Histogram to load:", histograms)
-                    
-                    
-                    if selected_object and button_col.button(f"Load {action.split()[1]}"):
-                        with st.spinner(f"Reading {action.split()[1]} '{selected_object}'..."):
-                            if action == "Load TTree (for DataFrame Analysis)":
-                                df = read_tree_to_dataframe(temp_path, selected_object)
-                                load_data_into_state(df, f"{uploaded_file.name} (TTree: {selected_object})", "DataFrame")
-                                st.markdown(f"**Events**: {len(df)}")
-                                st.markdown(f"**Columns**: {', '.join(df.columns.tolist())}")
-                                st.dataframe(df.head(10))
+        if st.button("🚀 Run AI Analysis", type="primary"):
+            if not user_prompt:
+                st.error("Please enter an analysis prompt.")
+            else:
+                with st.spinner("Analyzing data with Gemini..."):
+                    try:
+                        # Call the AI analysis function
+                        analysis_results = analyze_with_ai(user_prompt, df)
 
-                            elif action == "Load Histogram (for Plotting)":
-                                hist_data = read_histogram(temp_path, selected_object)
-                                load_data_into_state(None, f"{uploaded_file.name} (Hist: {selected_object})", "ROOT_Object", hist_data)
-                                
-                                # Display the loaded histogram
-                                st.markdown(f"### Histogram: {hist_data['title']}")
-                                if hist_data['type'] == 'TH1':
-                                    fig, ax = plt.subplots(figsize=(10, 6))
-                                    # Use bin centers to plot data from histogram (values are counts, bin_centers are x-values)
-                                    ax.hist(hist_data['bin_centers'], bins=hist_data['edges'], weights=hist_data['values'], histtype='stepfilled', edgecolor='black', alpha=0.7, color='steelblue')
-                                    ax.set_title(hist_data['title'], fontweight='bold')
-                                    ax.set_xlabel("Bin Value") 
-                                    ax.set_ylabel("Counts")
-                                    st.pyplot(fig)
-                                    
-                                elif hist_data['type'] == 'TH2':
-                                    # Plotting 2D histogram data
-                                    fig = go.Figure(data=go.Heatmap(
-                                        z=np.array(hist_data['values']).T, # Transpose is typical for uproot 2D array representation
-                                        x=hist_data['x_edges'],
-                                        y=hist_data['y_edges'],
-                                        colorscale='Viridis'
-                                    ))
-                                    fig.update_layout(
-                                        title=hist_data['title'], 
-                                        xaxis_title="X-Axis Bins", 
-                                        yaxis_title="Y-Axis Bins"
-                                    )
-                                    st.plotly_chart(fig, use_container_width=True)
-                                
-                                
-                    else:
-                        st.info("Select an object and click 'Load' to analyze.")
-                        
-            except Exception as e:
-                st.error(f"Error during file processing: {str(e)}")
-                load_data_into_state(None, "Error", "None")
-    
-    with url_tab:
-        st.markdown("### Fetch Data from URL")
-        st.warning("Only use direct links to CSV or ROOT files. Large ROOT files may fail due to size/timeout limits.")
-        url_input = st.text_input("Enter URL (e.g., https://example.com/data.csv)")
-        
-        if st.button("Fetch Data from URL") and url_input:
-            with st.spinner(f"Fetching data from {url_input}..."):
-                try:
-                    data, file_type = fetch_data_from_url(url_input)
-                    if file_type == 'csv':
-                        # 'data' is the DataFrame
-                        load_data_into_state(data, f"URL: {url_input}", "DataFrame")
-                    elif file_type == 'root':
-                        # 'data' is the temp_path
-                        temp_path = data
-                        root_info = get_root_file_info(temp_path) 
-                        if root_info['trees']:
-                            tree_name = root_info['trees'][0]['name']
-                            df = read_tree_to_dataframe(temp_path, tree_name)
-                            load_data_into_state(df, f"URL: {url_input} (TTree: {tree_name})", "DataFrame")
-                        else:
-                            st.warning("Fetched ROOT file has no TTree. Use 'Upload Data' to select a Histogram.")
+                        if analysis_results.get('success', False):
+                            st.subheader("✅ Analysis Complete")
                             
-                except Exception as e:
-                    st.error(f"Error fetching data: {str(e)}")
+                            # 1. Display Explanation
+                            st.markdown("### 📝 Explanation of Results")
+                            st.info(analysis_results.get('explanation', 'No explanation provided.'))
+                            
+                            # 2. Display Plot
+                            plot_data = analysis_results.get('plot_data')
+                            if plot_data and 'fig' in plot_data:
+                                st.markdown("### 📈 Generated Plot")
+                                st.pyplot(plot_data['fig'])
+                            else:
+                                st.warning("No plot was generated for this request.")
 
-    with cern_tab:
-        st.markdown("### Download CERN Open Data")
-        st.markdown("Example: Record 5200 (Higgs $\\to 4\ell$) | File: `4mu_2012.csv`")
-        record_id = st.text_input("CERN Record ID (e.g., 5200)", value="5200")
-        file_name = st.text_input("File Name (e.g., 4mu_2012.csv)", value="4mu_2012.csv")
-        
-        if st.button("Download CERN File") and record_id and file_name:
-            with st.spinner(f"Downloading {file_name} from CERN Record {record_id}..."):
-                try:
-                    filepath = download_cern_dataset(record_id, file_name)
-                    if file_name.endswith('.csv'):
-                        df = load_csv_data(filepath)
-                        load_data_into_state(df, f"CERN {record_id}: {file_name}", "DataFrame")
-                    else:
-                        st.warning("Downloaded non-CSV file. Please check 'Upload Data' for manual loading/selection.")
-                except Exception as e:
-                    st.error(f"Failed to download CERN file: {str(e)}")
+                            # 3. Display Code
+                            st.markdown("### 🐍 Generated Python Code")
+                            st.code(analysis_results.get('code', 'No code generated.'), language='python')
+                            
+                        else:
+                            st.error(f"AI Analysis Failed: {analysis_results.get('error', 'Unknown error.')}")
+
+                    except Exception as e:
+                        st.exception(f"An unexpected error occurred during AI analysis: {e}")
 
 
-# --- Data Explorer Page ---
-elif page == "🔍 Data Explorer":
-    st.markdown('<div class="main-header">🔍 Data Explorer</div>', unsafe_allow_html=True)
-    
-    if st.session_state.current_data_type == "DataFrame":
-        df = st.session_state.current_data
-        st.info(f"Currently analyzing event-level data from: **{st.session_state.data_source}** | Events: **{len(df)}**")
+# --- EDA Tab ---
+with tab_eda:
+    st.markdown("## 📊 Exploratory Data Analysis")
+
+    if df is not None:
         
-        st.markdown("### Dataset Preview")
-        st.dataframe(df.head())
+        # Display Data Information
+        st.markdown("### 📋 Data Overview")
+        st.markdown(f"**File Name:** `{st.session_state.file_name}` | **Rows:** `{len(df)}` | **Columns:** `{len(df.columns)}`")
         
-        st.markdown("### 📈 Basic Statistics")
-        stats = {
-            "Total Events": len(df),
-            "Number of Variables": len(df.columns),
-            "Numerical Variables": len(df.select_dtypes(include=[np.number]).columns),
-            "Categorical Variables": len(df.select_dtypes(include=['object']).columns)
-        }
-        st.dataframe(pd.DataFrame(stats.items(), columns=["Statistic", "Value"]))
+        if st.checkbox("Show Raw Data (first 50 rows)"):
+            st.dataframe(df.head(50), use_container_width=True)
+
+        # Basic Statistics
+        st.markdown("### 🔢 Descriptive Statistics")
+        st.dataframe(df.describe(include='all').T, use_container_width=True)
         
-        st.markdown("### 🔗 Correlation Matrix")
+        # Column Details
+        st.markdown("### 🔍 Column Details")
+        col_info = pd.DataFrame({
+            'Dtype': df.dtypes,
+            'Non-Null Count': df.count(),
+            'Unique Values': df.nunique()
+        }).sort_values(by='Dtype')
+        st.dataframe(col_info, use_container_width=True)
+
+        # Histograms for numerical data
         numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-        
-        if len(numeric_cols) > 1:
-            corr_matrix = df[numeric_cols].corr()
+        if numeric_cols:
+            st.markdown("### 📈 Histograms of Key Variables")
             
-            fig = px.imshow(
-                corr_matrix,
-                text_auto=True,
-                aspect="auto",
-                color_continuous_scale='RdBu_r',
-                title="Correlation Matrix"
-            )
-            st.plotly_chart(fig, use_container_width=True)
+            # Select column for quick visualization
+            selected_col = st.selectbox("Select a column to plot:", numeric_cols)
+            
+            if selected_col:
+                # Plotly histogram
+                fig = px.histogram(
+                    df, 
+                    x=selected_col, 
+                    nbins=50, 
+                    title=f"Distribution of {selected_col}",
+                    template="plotly_white",
+                    color_discrete_sequence=['#1f77b4'] # Streamlit blue
+                )
+                fig.update_layout(bargap=0.1)
+                st.plotly_chart(fig, use_container_width=True)
 
-    elif st.session_state.current_data_type == "ROOT_Object":
-        hist_data = st.session_state.current_root_object
-        st.info(f"Currently viewing loaded histogram data from: **{st.session_state.data_source}**")
-        
-        st.markdown(f"### Histogram Data: {hist_data['title']}")
-        if hist_data['type'] == 'TH1':
-             fig, ax = plt.subplots(figsize=(10, 6))
-             # Use bin centers to plot data from histogram
-             ax.hist(hist_data['bin_centers'], bins=hist_data['edges'], weights=hist_data['values'], histtype='stepfilled', edgecolor='black', alpha=0.7, color='steelblue')
-             ax.set_title(hist_data['title'], fontweight='bold')
-             ax.set_xlabel("Bin Value") 
-             ax.set_ylabel("Counts")
-             st.pyplot(fig)
-        elif hist_data['type'] == 'TH2':
-            st.markdown("#### 2D Histogram Preview")
-            st.json({"Type": "TH2", "Title": hist_data['title'], "X-Bins": len(hist_data['x_edges'])-1, "Y-Bins": len(hist_data['y_edges'])-1})
-            # Full 2D plot using Plotly
-            fig = go.Figure(data=go.Heatmap(
-                z=np.array(hist_data['values']).T, # Transpose for correct visualization
-                x=hist_data['x_edges'],
-                y=hist_data['y_edges'],
-                colorscale='Viridis'
-            ))
-            fig.update_layout(title=hist_data['title'])
-            st.plotly_chart(fig, use_container_width=True)
-        
+
+        # Correlation matrix
+        if len(df.select_dtypes(include=[np.number]).columns) > 1:
+            st.markdown("### 🔗 Correlation Matrix")
+            
+            numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+            
+            if len(numeric_cols) > 1:
+                corr_matrix = df[numeric_cols].corr()
+                
+                fig = px.imshow(
+                    corr_matrix,
+                    text_auto=True,
+                    aspect="auto",
+                    color_continuous_scale='RdBu_r',
+                    title="Correlation Matrix"
+                )
+                st.plotly_chart(fig, use_container_width=True)
+    
     else:
         st.warning("⚠️ No data loaded. Please upload data or load an example first.")
-
-
-# --- AI Analysis Page (Enhanced for Declarative Pipeline) ---
-elif page == "🤖 AI Analysis":
-    st.markdown('<div class="main-header">🤖 AI-Powered Analysis Assistant</div>', unsafe_allow_html=True)
-    
-    # Check for API key in environment
-    if not os.getenv('GEMINI_API_KEY'):
-        st.warning("⚠️ Gemini API key not configured. Please add your `GEMINI_API_KEY` to your environment variables to use AI analysis features.")
-
-    # Check if event-level data (DataFrame) is loaded
-    if st.session_state.current_data_type == "DataFrame":
-        df = st.session_state.current_data
-        st.info(f"Loaded Data: **{st.session_state.data_source}** | Events: **{len(df)}** | Columns: **{len(df.columns)}**")
-        st.markdown("### Analysis Request")
-        
-        user_prompt = st.text_area(
-            "Enter your analysis request in natural language:", 
-            value="Calculate the invariant mass M_ll for the two highest $p_T$ leptons (lep1_pt, lep1_eta, lep1_phi, lep2_pt, lep2_eta, lep2_phi) assuming they are electrons (ELECTRON_MASS). Apply a cut requiring lep1_pt > 25 GeV. Then, plot a histogram of M_ll between 0 and 150 GeV, and perform a Gaussian fit in the range 80-100 GeV."
-        )
-        
-        if st.button("Run AI Analysis"):
-            if not os.getenv('GEMINI_API_KEY'):
-                st.error("Cannot run analysis: GEMINI_API_KEY is not set.")
-            else:
-                with st.spinner("🧠 AI is generating and executing the analysis pipeline... This may take a moment."):
-                    # The analyze_with_ai function handles the LLM call and code generation/execution
-                    result = analyze_with_ai(user_prompt, df)
-                
-                if result['success']:
-                    st.success("✅ AI Analysis Complete")
-                    
-                    st.markdown("### 📝 Explanation and Physics Context")
-                    st.markdown(result['explanation'])
-                    
-                    # Display Results
-                    st.markdown("### 📊 Results")
-                    
-                    # Check for plot result
-                    if 'Plot' in result['results']:
-                        st.pyplot(result['results']['Plot'])
-                    
-                    # Check for statistics
-                    if 'Statistics' in result['results'] and not result['results']['Statistics'].empty:
-                        st.markdown("#### Statistical Report")
-                        st.dataframe(result['results']['Statistics'])
-                    
-                    # Check for pipeline steps (calculations/filters)
-                    st.markdown("#### Analysis Pipeline Steps Summary")
-                    # Exclude plot and stats objects for cleaner display
-                    pipeline_summary = {k: v for k, v in result['results'].items() if k not in ['Plot', 'Statistics', 'Plot Error']}
-                    st.json(pipeline_summary)
-
-                    with st.expander("🔍 View Full Declarative Specification (AI Output)"):
-                        st.json(result['specification'])
-                else:
-                    st.error(f"Analysis Error: {result.get('error', 'Unknown error during AI analysis.')}")
-
-    elif st.session_state.current_data_type == "ROOT_Object":
-        st.info(f"A pre-made Histogram (`{st.session_state.current_root_object['name']}`) is currently loaded. AI Analysis requires event-level data (DataFrame) for calculations and filtering.")
-        st.warning("Please load a TTree from your ROOT file or a CSV file to use the AI Analysis feature.")
-
-    else:
-        st.warning("⚠️ No event data loaded. Please upload data or load an example first.")
-
-    st.markdown("---")
-    st.markdown("### Example Prompts for Advanced Analysis")
-    st.markdown("""
-    - **Overlap Plots**: "Plot the invariant mass M_ll for events with $p_T(lep1)>25$ GeV (label 'Signal') and overlap it with a plot where $p_T(lep1)<10$ GeV (label 'Background'). Use different colors."
-    - **Derived Variables**: "Calculate $\Delta R$ between the two leptons (lep1_eta, lep1_phi, lep2_eta, lep2_phi) and plot a histogram of the result."
-    - **Transverse Mass**: "Calculate the transverse mass $M_T$ using `lep1_pt`, `lep1_phi`, `met`, and `met_phi`. Plot the distribution up to 200 GeV."
-    """)
-
+        st.markdown("Go to **📚 Examples Gallery** to load a dataset.")
 
 # Footer
 st.sidebar.markdown("---")
@@ -483,10 +300,10 @@ st.sidebar.markdown("### 📚 Resources")
 st.sidebar.markdown("""
 - [CERN Open Data](https://opendata.cern.ch/)
 - [CMS Open Data](https://cms-opendata-guide.web.cern.ch/)
-- [ATLAS Open Data](https://atlas-opendata.web.cern.ch/)
+- [GitHub Examples](https://github.com/cms-opendata-analyses)
 """)
 
 st.sidebar.markdown("### ℹ️ About")
 st.sidebar.markdown("""
-Built by Dr. Wasikul Islam (https://wasikatcern.github.io), with Streamlit and Python for particle physics data analysis and education. Contact: wasikul.islam@cern.ch
+Built by Dr. Wasikul Islam (https://wasikatcern.github.io), with Streamlit and Python for particle physics data analysis.
 """)
