@@ -1,3 +1,8 @@
+"""
+Particle Physics Data Analysis Web Application
+Analyze CERN Open Data with AI-powered analysis assistance
+"""
+
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -6,10 +11,12 @@ import plotly.express as px
 import plotly.graph_objects as go
 from io import StringIO
 import os
-import json
 
 # Import custom modules
-from examples_data import get_all_examples, get_example
+# FIX: The file is located at 'examples/examples_data.py'. 
+# The import must reference the module within the 'examples' package.
+# This assumes the 'examples' directory contains an __init__.py file.
+from examples.examples_data import get_all_examples, get_example
 from utils import (
     fetch_data_from_url,
     download_cern_dataset,
@@ -52,311 +59,386 @@ st.markdown("""
         padding: 1rem;
         border-radius: 0.5rem;
         border-left: 5px solid #1f77b4;
+        margin-bottom: 1rem;
     }
-    /* Style for the conversational chat interface */
-    .stChatFloatingInputContainer {
-        border-top: 1px solid #ccc;
-        padding-top: 10px;
+    .stSelectbox label, .stTextInput label, .stFileUploader label {
+        font-weight: bold;
+        color: #1f77b4;
     }
-    .chat-container {
-        max-height: 70vh;
-        overflow-y: auto;
-        padding: 10px;
-        border: 1px solid #ddd;
-        border-radius: 8px;
-        margin-bottom: 10px;
+    .stButton>button {
+        color: white !important;
+        background-color: #1f77b4;
+        border-radius: 0.5rem;
+        border: none;
+        padding: 0.5rem 1rem;
+        transition: all 0.2s;
     }
-    .user-message {
-        background-color: #e6f7ff;
-        padding: 10px;
-        border-radius: 15px 15px 5px 15px;
-        margin: 5px 0;
-        text-align: right;
-        display: inline-block;
-        max-width: 80%;
-        float: right;
-    }
-    .ai-message {
-        background-color: #f0f0f0;
-        padding: 10px;
-        border-radius: 15px 15px 15px 5px;
-        margin: 5px 0;
-        text-align: left;
-        display: inline-block;
-        max-width: 80%;
-        float: left;
-    }
-    .st-emotion-cache-1jm694k, .st-emotion-cache-1uj2t3h {
-        max-width: none;
+    .stButton>button:hover {
+        background-color: #1a5e8f;
     }
 </style>
-"""
-, unsafe_allow_html=True)
+""", unsafe_allow_html=True)
 
-# --- Session State Initialization ---
+# Session state initialization
+if 'data_loaded' not in st.session_state:
+    st.session_state.data_loaded = False
 if 'df' not in st.session_state:
-    st.session_state['df'] = None
-if 'file_info' not in st.session_state:
-    st.session_state['file_info'] = "No data loaded."
-if 'ai_chat_history' not in st.session_state:
-    st.session_state['ai_chat_history'] = []
+    st.session_state.df = pd.DataFrame()
+if 'filename' not in st.session_state:
+    st.session_state.filename = "No Data"
+if 'file_type' not in st.session_state:
+    st.session_state.file_type = ""
+if 'root_info' not in st.session_state:
+    st.session_state.root_info = {}
+if 'root_filepath' not in st.session_state:
+    st.session_state.root_filepath = None
 if 'analysis_results' not in st.session_state:
-    st.session_state['analysis_results'] = []
-if 'current_df' not in st.session_state:
-    st.session_state['current_df'] = None
+    st.session_state.analysis_results = None
+if 'ai_prompt' not in st.session_state:
+    st.session_state.ai_prompt = ""
+if 'data_source' not in st.session_state:
+    st.session_state.data_source = "None"
+if 'last_analysis_prompt' not in st.session_state:
+    st.session_state.last_analysis_prompt = ""
 
 
-# --- Helper Functions for Data Loading ---
+# --- Data Loading Handlers ---
 
-def load_data_from_df(df, info):
-    st.session_state['df'] = df
-    st.session_state['current_df'] = df.copy()
-    st.session_state['file_info'] = info
-    st.session_state['ai_chat_history'] = [] # Clear history on new data load
-    st.session_state['analysis_results'] = []
-    st.success(f"Successfully loaded {len(df)} events.")
-    st.rerun()
+def load_data(df_or_path, filename, file_type, root_info=None):
+    """Updates session state with loaded data."""
+    st.session_state.filename = filename
+    st.session_state.file_type = file_type
+    st.session_state.analysis_results = None # Clear previous analysis
 
-def load_example_data(example_id):
+    if file_type == 'csv':
+        st.session_state.df = df_or_path
+        st.session_state.data_loaded = True
+        st.session_state.root_info = {}
+        st.session_state.root_filepath = None
+        st.success(f"✅ Successfully loaded CSV data: **{filename}** ({len(st.session_state.df):,} events)")
+    
+    elif file_type == 'root':
+        st.session_state.root_filepath = df_or_path # Store path
+        st.session_state.root_info = root_info # Store info
+        st.session_state.df = pd.DataFrame() # Clear DataFrame until a tree is selected
+        st.session_state.data_loaded = False # Set to False until a tree is read
+        st.success(f"✅ Successfully opened ROOT file: **{filename}** ({len(root_info.get('trees', []))} TTree(s) found)")
+
+
+def load_example_data(example_id, file_index=0):
+    """Loads a specific example dataset from CERN Open Data."""
     example = get_example(example_id)
     if not example or not example.get('data_files'):
-        st.error("Example data configuration is incomplete.")
+        st.error("❌ Example data not found or no files specified.")
         return
 
-    st.info(f"Loading data for: {example['title']}...")
-    
-    # For simplicity, load the first file (assuming it's the main data file)
-    file_to_load = example['data_files'][0]
-    file_url = file_to_load['url']
+    data_file = example['data_files'][file_index]
+    filename = data_file['name']
+    url = data_file['url']
     
     try:
-        if file_url.endswith('.csv'):
-            df, _ = fetch_data_from_url(file_url)
-            info = f"Loaded CSV data from {file_to_load['name']}"
-            load_data_from_df(df, info)
+        if filename.endswith('.root'):
+            # Fetch ROOT file (saved to temp path)
+            root_filepath, file_type = fetch_data_from_url(url)
+            root_info = get_root_file_info(root_filepath)
+            
+            # Auto-read the first TTree for immediate use
+            if root_info.get('trees'):
+                tree_name = root_info['trees'][0]['name']
+                df = read_tree_to_dataframe(root_filepath, tree_name)
+                load_data(df, filename, 'csv') # Treat as CSV for plotting ease
+                st.session_state.data_source = f"CERN Open Data: {example['title']}"
+            else:
+                 load_data(root_filepath, filename, 'root', root_info)
+                 st.session_state.data_source = f"CERN Open Data: {example['title']}"
+
+        elif filename.endswith('.csv'):
+            df, file_type = fetch_data_from_url(url)
+            load_data(df, filename, file_type)
+            st.session_state.data_source = f"CERN Open Data: {example['title']}"
+
         else:
-             st.error("Only CSV loading is supported for direct examples in this version.")
+            st.error(f"❌ Unsupported file type for example: {filename}")
+            
     except Exception as e:
-        st.error(f"Error loading example data: {e}")
+        st.error(f"❌ Failed to load example data: {str(e)}")
 
-# --- AI Analysis Tab Logic ---
 
-def handle_ai_prompt(prompt):
-    if not st.session_state.get('df') is None:
-        
-        # 1. Append user message to history
-        st.session_state['ai_chat_history'].append({"role": "user", "content": prompt})
-        
-        # 2. Call the AI analysis function
-        with st.spinner("⚛️ Analyzing data with Gemini..."):
-            
-            # The AI analysis function now returns a more detailed result,
-            # including the conversational response from the AI.
-            analysis_result = analyze_with_ai(prompt, st.session_state['current_df'])
-        
-        # 3. Append AI response to history
-        st.session_state['ai_chat_history'].append({"role": "ai", "content": analysis_result.get('explanation', 'Error: Could not process request.')})
-        
-        if analysis_result['success']:
-            # 4. Store results and update the current DataFrame if filtering occurred
-            st.session_state['analysis_results'].extend(analysis_result['results'])
-            
-            # Check if a filtering step changed the DataFrame
-            temp_df = st.session_state['current_df'].copy()
-            for step in analysis_result['results']:
-                if step['function'] == 'filter_data' and 'new_df' in step:
-                    temp_df = step['new_df']
-            
-            # Only update the session state if the DF changed its shape or a filtering step occurred
-            # This is a bit of a placeholder since `analyze_with_ai` needs to be updated to manage the DF.
-            # In the new ai_analysis.py, we manage current_df inside the function.
-            st.session_state['current_df'] = temp_df
-            
-            st.toast(f"Analysis step completed! New shape: {analysis_result['final_df_shape']}")
-        else:
-            # If AI analysis failed, provide the error message.
-            st.error(f"AI Analysis Failure: {analysis_result['error']}")
-            st.toast("Analysis failed. Check the error message.")
+def run_ai_analysis():
+    """Runs the AI analysis and updates results in session state."""
+    if not st.session_state.data_loaded:
+        st.warning("Please load a dataset first.")
+        return
 
-        st.rerun()
-    else:
-        st.warning("Please load a dataset before starting the AI analysis.")
+    st.session_state.last_analysis_prompt = st.session_state.ai_prompt # Store prompt
+    
+    with st.spinner(f"Running AI analysis for: '{st.session_state.ai_prompt}'..."):
+        try:
+            results = analyze_with_ai(st.session_state.ai_prompt, st.session_state.df)
+            st.session_state.analysis_results = results
+        except Exception as e:
+            st.session_state.analysis_results = {'success': False, 'error': str(e)}
 
-# --- Tab Setup ---
-tab_titles = ["🏠 Home", "📤 Upload Data", "📚 Examples Gallery", "🧠 AI Analysis", "📊 Data Overview"]
-tabs = st.tabs(tab_titles)
 
-with tabs[0]:
-    st.markdown("<h1 class='main-header'>ParticleDesk: Interactive HEP Analysis</h1>", unsafe_allow_html=True)
+# --- Sidebar Navigation ---
+
+st.sidebar.title("ParticleDesk ⚛️")
+st.sidebar.markdown("---")
+
+page = st.sidebar.radio(
+    "Navigation", 
+    ["📊 Data Overview", "🤖 AI Analysis", "📚 Examples Gallery", "📤 Upload Data"],
+    index=0
+)
+
+# --- Main Page Content ---
+
+st.markdown("<p class='main-header'>Particle Physics Data Analysis Platform</p>", unsafe_allow_html=True)
+
+# Display current data status
+if st.session_state.data_loaded:
+    st.sidebar.success(f"Loaded: **{st.session_state.filename}** ({len(st.session_state.df):,} events)")
+    st.sidebar.caption(f"Source: {st.session_state.data_source}")
+else:
+    st.sidebar.info("No data loaded.")
+
+
+# --- Page: Examples Gallery ---
+
+if page == "📚 Examples Gallery":
+    st.header("📚 Examples Gallery")
     st.markdown("""
-    Welcome to ParticleDesk, your simplified platform for High Energy Physics (HEP) data analysis.
-    Load data from CERN Open Data or upload your own, then use the **AI Analysis** tab to run complex analyses using natural language.
-    
-    ### Current Status
-    - **Data Loaded:** {}
-    - **Events:** {}
-    """.format(
-        "Yes" if st.session_state['df'] is not None else "No",
-        len(st.session_state['df']) if st.session_state['df'] is not None else 0
-    ))
-    
-    if st.session_state['df'] is None:
-        st.info("Start by going to the **📚 Examples Gallery** to load a dataset, or **📤 Upload Data**.")
-
-with tabs[1]:
-    st.markdown("## 📤 Upload Data")
-    st.info("Upload your CSV or a ROOT file. For ROOT files, only a sample of entries will be read for performance.")
-    
-    uploaded_file = st.file_uploader("Choose a file (CSV or ROOT)", type=['csv', 'root'])
-    
-    if uploaded_file is not None:
-        file_type = uploaded_file.name.split('.')[-1]
-        
-        with st.spinner(f"Loading {file_type} data..."):
-            try:
-                if file_type == 'csv':
-                    df = load_csv_data(uploaded_file)
-                    info = f"Loaded CSV file: {uploaded_file.name}"
-                    load_data_from_df(df, info)
-
-                elif file_type == 'root':
-                    # Temporarily save the uploaded file to disk for uproot to read
-                    temp_filepath = os.path.join('/tmp', uploaded_file.name)
-                    with open(temp_filepath, 'wb') as f:
-                        f.write(uploaded_file.getbuffer())
-
-                    # Get info and let user select tree/entries
-                    file_info = get_root_file_info(temp_filepath)
-                    tree_names = [t['name'] for t in file_info['trees']]
-                    
-                    if not tree_names:
-                        st.error("No TTrees found in the ROOT file.")
-                    else:
-                        selected_tree = st.selectbox("Select TTree to read:", tree_names)
-                        max_entries = st.number_input("Max entries to read:", min_value=1, value=50000, step=1000)
-                        
-                        if st.button("Load Tree"):
-                            df = read_tree_to_dataframe(temp_filepath, selected_tree, max_entries=max_entries)
-                            info = f"Loaded ROOT tree '{selected_tree}' from {uploaded_file.name} ({len(df)} entries)."
-                            load_data_from_df(df, info)
-
-            except Exception as e:
-                st.error(f"An error occurred during file processing: {e}")
-
-with tabs[2]:
-    st.markdown("## 📚 Examples Gallery")
-    st.markdown("Load pre-curated datasets from CERN Open Data to start your analysis instantly.")
+    Explore curated datasets from CERN Open Data for quick analysis and learning.
+    """)
     
     examples = get_all_examples()
     example_ids = list(examples.keys())
     
-    cols = st.columns(len(example_ids))
-    
-    for i, example_id in enumerate(example_ids):
-        example = examples[example_id]
-        with cols[i]:
-            st.subheader(example['title'])
-            st.caption(f"Source: {example['source']}")
-            st.markdown(example['description'])
-            
-            if st.button(f"Load {example['title']}", key=f"load_ex_{example_id}"):
-                load_example_data(example_id)
+    selected_id = st.selectbox("Select Example Dataset", example_ids, format_func=lambda x: examples[x]['title'])
 
-with tabs[3]:
-    st.markdown("## 🧠 AI Analysis Assistant (Conversational)")
-    st.info("Type your analysis request (e.g., 'Plot the four-lepton mass between 100 and 150 GeV with 50 bins and mark the Higgs mass at 125 GeV').")
+    if selected_id:
+        example = examples[selected_id]
+        
+        st.markdown(f"### {example['title']}")
+        st.info(example['description'])
+        
+        if 'publication' in example:
+            st.markdown(f"**Publication:** {example['publication']}")
+        
+        st.markdown(f"**Data Source:** [{example['dataset_url']}]({example['dataset_url']})")
+        
+        st.subheader("Data Files")
+        for i, file_info in enumerate(example.get('data_files', [])):
+            col1, col2 = st.columns([1, 4])
+            col2.markdown(f"**{file_info['name']}**")
+            col1.button("Load", key=f"load_example_{i}", help=f"Load {file_info['name']}", on_click=load_example_data, args=(selected_id, i))
+
+        st.subheader("Suggested AI Prompts")
+        prompt_col1, prompt_col2 = st.columns(2)
+        for i, prompt in enumerate(example.get('suggested_prompts', [])):
+            with prompt_col1 if i % 2 == 0 else prompt_col2:
+                st.code(prompt, language='text')
+
+# --- Page: Upload Data ---
+
+elif page == "📤 Upload Data":
+    st.header("📤 Upload Data")
+    st.markdown("""
+    Upload your own CSV or ROOT files, or fetch a dataset directly from a URL.
+    """)
     
-    if st.session_state['df'] is None:
-        st.warning("Please load a dataset in the 'Upload Data' or 'Examples Gallery' tab to begin AI analysis.")
-    else:
+    tab_upload, tab_url = st.tabs(["Local Upload", "URL Fetch"])
+
+    with tab_upload:
+        uploaded_file = st.file_uploader("Upload CSV or ROOT File", type=["csv", "root"])
         
-        # --- Multi-Prompt Chat Interface ---
-        
-        # Main container for chat history
-        st.markdown("<div class='chat-container'>", unsafe_allow_html=True)
-        
-        if not st.session_state['ai_chat_history']:
-            # Initial greeting
-            st.markdown(f"""
-            <div class='ai-message'>
-                Hello! I'm your Particle Physics AI Analyst. The current dataset has {len(st.session_state['df'])} events and columns like {st.session_state['df'].columns.tolist()[:5]}...
-                How can I help you analyze this data?
-                Try asking me to plot something, like: "Plot the M column as a histogram from 100 to 150 GeV in 50 bins."
-            </div><div style="clear:both;"></div>
-            """, unsafe_allow_html=True)
-        
-        # Display chat history (Jupyter-style cells)
-        for i, message in enumerate(st.session_state['ai_chat_history']):
+        if uploaded_file is not None:
+            filename = uploaded_file.name
             
-            # User Message
-            if message["role"] == "user":
-                st.markdown(f"""
-                <div class='user-message'>
-                    **[Input {i+1}]:** {message["content"]}
-                </div><div style="clear:both;"></div>
-                """, unsafe_allow_html=True)
-            
-            # AI Response
-            elif message["role"] == "ai":
-                st.markdown(f"""
-                <div class='ai-message'>
-                    **[Output {i+1}]:** {message["content"]}
-                </div><div style="clear:both;"></div>
-                """, unsafe_allow_html=True)
-                
-                # Check for and display analysis results associated with this output step
-                # NOTE: This assumes the history index corresponds roughly to the results index. 
-                # A more robust system would link them explicitly, but for now, we rely on sequential appending.
-                if i < len(st.session_state['analysis_results']):
-                    result = st.session_state['analysis_results'][i]
-                    if result.get('plot'):
-                        # Display matplotlib figure
-                        st.markdown("#### Generated Plot:")
-                        st.pyplot(result['plot'])
+            if filename.endswith('.csv'):
+                try:
+                    stringio = StringIO(uploaded_file.getvalue().decode("utf-8"))
+                    df = load_csv_data(stringio)
+                    load_data(df, filename, 'csv')
+                    st.session_state.data_source = "Local Upload"
+                except Exception as e:
+                    st.error(f"Failed to read CSV: {str(e)}")
                     
-                    # Display statistics or filtering reports
-                    if result.get('function') in ['get_stats', 'filter_data', 'calculate_mass']:
-                        st.markdown("#### Analysis Report:")
-                        st.code(result.get('result', 'No detailed report available.'))
+            elif filename.endswith('.root'):
+                # In a Streamlit environment, handle the uploaded file buffer
+                # by saving it temporarily to disk for uproot to access.
+                temp_path = f"/tmp/{filename}"
+                with open(temp_path, "wb") as f:
+                    f.write(uploaded_file.getbuffer())
+                
+                try:
+                    root_info = get_root_file_info(temp_path)
+                    load_data(temp_path, filename, 'root', root_info)
+                    st.session_state.data_source = "Local Upload"
+                except Exception as e:
+                    st.error(f"Failed to open ROOT file: {str(e)}")
+                    os.remove(temp_path)
 
-        st.markdown("</div>", unsafe_allow_html=True)
+    with tab_url:
+        url_input = st.text_input("Enter URL for CSV or ROOT file", 
+                                  placeholder="e.g., https://opendata.cern.ch/record/5200/files/4mu_2012.csv")
+        if st.button("Fetch Data from URL") and url_input:
+            with st.spinner(f"Fetching data from {url_input}..."):
+                try:
+                    result, file_type = fetch_data_from_url(url_input)
+                    filename = url_input.split('/')[-1]
+                    
+                    if file_type == 'csv':
+                        load_data(result, filename, 'csv')
+                        st.session_state.data_source = "URL Fetch"
+                    elif file_type == 'root':
+                        root_filepath = result
+                        root_info = get_root_file_info(root_filepath)
+                        load_data(root_filepath, filename, 'root', root_info)
+                        st.session_state.data_source = "URL Fetch"
+                    
+                except Exception as e:
+                    st.error(f"❌ Fetch failed: {str(e)}")
 
-        # Input box for new prompt
-        st.markdown("<div class='stChatFloatingInputContainer'>", unsafe_allow_html=True)
-        prompt = st.chat_input("Enter your analysis request (e.g., 'Filter M > 120 GeV'):")
-        if prompt:
-            handle_ai_prompt(prompt)
-        st.markdown("</div>", unsafe_allow_html=True)
 
+# --- Page: AI Analysis ---
 
-with tabs[4]:
-    st.markdown("## 📊 Data Overview")
-    df = st.session_state['df']
-    if df is not None:
-        st.markdown(f"### Current Data: {st.session_state['file_info']}")
-        st.dataframe(df.head(10))
-        
-        # Display basic stats
-        st.markdown("### 🔢 Descriptive Statistics")
-        st.dataframe(df.describe().T)
-
-        # Plot individual column histograms (This is what you mentioned works)
-        st.markdown("### 📈 Single Variable Histograms")
-        
-        numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-        
-        if numeric_cols:
-            selected_col = st.selectbox("Select column to plot:", numeric_cols, index=numeric_cols.index('M') if 'M' in numeric_cols else 0)
+elif page == "🤖 AI Analysis":
+    st.header("🤖 AI-Powered Analysis")
+    
+    if not st.session_state.data_loaded and not st.session_state.root_filepath:
+        st.warning("⚠️ No data loaded. Please load a CSV or read a TTree from a ROOT file first.")
+    
+    else:
+        # Step 1: Handle ROOT File Tree Selection (if necessary)
+        if st.session_state.file_type == 'root' and st.session_state.root_info and not st.session_state.data_loaded:
+            st.info(f"ROOT file **{st.session_state.filename}** loaded. Please select a TTree to load data.")
             
-            fig = px.histogram(
-                df, 
-                x=selected_col, 
-                title=f"Distribution of {selected_col}", 
-                nbins=50,
-                color_discrete_sequence=['#1f77b4'] # Streamlit blue
+            tree_names = [t['name'] for t in st.session_state.root_info.get('trees', [])]
+            selected_tree = st.selectbox("Select TTree to Analyze", tree_names)
+            
+            if selected_tree and st.button("Load Tree Data"):
+                with st.spinner(f"Reading TTree '{selected_tree}'..."):
+                    try:
+                        # Re-read the full DataFrame from the selected tree
+                        df = read_tree_to_dataframe(st.session_state.root_filepath, selected_tree)
+                        st.session_state.df = df
+                        st.session_state.data_loaded = True
+                        st.session_state.file_type = 'csv' # Treat as flat CSV for analysis
+                        st.success(f"✅ Loaded **{selected_tree}** into DataFrame ({len(df):,} events).")
+                    except Exception as e:
+                        st.error(f"Failed to read tree: {str(e)}")
+                        
+            st.stop() # Stop further execution until tree is loaded
+            
+        # Step 2: AI Analysis Interface
+        
+        st.markdown("""
+        Enter your analysis goal using natural language. The AI will generate a safe, multi-step analysis plan
+        (filtering, calculating physics quantities, plotting) and execute it.
+        """)
+        
+        # Display data summary for context
+        if st.session_state.data_loaded:
+            cols_info = st.session_state.df.columns.tolist()
+            st.markdown(f"**Current Data Columns ({len(cols_info)}):** `{'`, `'.join(cols_info)}`")
+            st.caption("Commonly used columns: `pt`, `eta`, `phi`, `M_4l`.")
+
+        
+        st.text_area(
+            "Analysis Prompt",
+            value=st.session_state.last_analysis_prompt or "Filter events with M_4l between 100 and 150 GeV and plot the invariant mass distribution.",
+            key="ai_prompt",
+            height=100
+        )
+        
+        st.button("Run Analysis", key="run_ai", on_click=run_ai_analysis)
+
+        # Step 3: Display Results
+        
+        results = st.session_state.analysis_results
+        
+        if results:
+            st.markdown("---")
+            st.subheader("AI Analysis Results")
+
+            if not results['success']:
+                st.error(f"Analysis Error: {results.get('error', 'Unknown error.')}")
+            else:
+                st.markdown(f"### 💡 AI Plan Explanation")
+                st.info(results.get('explanation', 'No explanation provided.'))
+                
+                st.markdown(f"### ⚙️ Execution Details")
+                st.code(f"Final Data Shape: {results['final_df_shape']}", language='text')
+
+                
+                for step in results.get('results', []):
+                    st.markdown(f"**{step['function'].replace('_', ' ').title()}**")
+                    st.code(step['result'], language='text')
+                
+                # Plot Display
+                if results.get('plot_base64'):
+                    st.markdown("### 📈 Generated Plot")
+                    plot_b64 = results['plot_base64']
+                    st.image(f"data:image/png;base64,{plot_b64}", use_column_width=True)
+                else:
+                    st.info("No plot was generated in this analysis run.")
+
+
+# --- Page: Data Overview ---
+
+elif page == "📊 Data Overview":
+    st.header("📊 Data Overview")
+    
+    df = st.session_state.df
+    
+    if st.session_state.data_loaded:
+        st.markdown(f"**File:** {st.session_state.filename} | **Events:** {len(df):,} | **Columns:** {len(df.columns)}")
+        
+        st.markdown("### 📋 Data Sample")
+        st.dataframe(df.head(), use_container_width=True)
+        
+        # Display basic statistics for numerical columns
+        numeric_df = df.select_dtypes(include=np.number)
+        
+        if not numeric_df.empty:
+            st.markdown("### 🔢 Descriptive Statistics")
+            stats = numeric_df.describe().T
+            stats['Range'] = stats['max'] - stats['min']
+            stats['Median'] = numeric_df.median()
+            
+            # Reorder for better display
+            stats = stats[['count', 'mean', 'std', 'min', 'max', 'Median', 'Range']].rename(columns={'mean': 'Mean', 'std': 'Std Dev', 'min': 'Min', 'max': 'Max', 'count': 'Count'})
+            st.dataframe(stats, use_container_width=True)
+
+            # --- Visualizations ---
+            
+            st.markdown("### 🎨 Visualizations")
+
+            # Column selection for plotting
+            plot_col = st.selectbox(
+                "Select a column for quick histogram", 
+                numeric_df.columns.tolist(),
+                key="overview_hist_col"
             )
-            fig.update_layout(bargap=0.1)
-            st.plotly_chart(fig, use_container_width=True)
+            
+            # Histogram
+            if plot_col:
+                st.markdown(f"#### Distribution of {plot_col}")
+                
+                # Auto-determine bins for a smooth look
+                num_unique = len(df[plot_col].unique())
+                bins = min(50, num_unique // 5 if num_unique > 50 else 20)
+                
+                fig = px.histogram(
+                    df, 
+                    x=plot_col, 
+                    nbins=bins, 
+                    title=f"Histogram of {plot_col}",
+                    color_discrete_sequence=['#1f77b4'] # Streamlit blue
+                )
+                fig.update_layout(bargap=0.1)
+                st.plotly_chart(fig, use_container_width=True)
 
 
         # Correlation matrix
@@ -378,8 +460,14 @@ with tabs[4]:
                 st.plotly_chart(fig, use_container_width=True)
     
     else:
-        st.warning("⚠️ No data loaded. Please upload data or load an example first.")
-        st.markdown("Go to **📚 Examples Gallery** to load a dataset.")
+        # Handle ROOT file info display if only the file is loaded, but not the tree
+        if st.session_state.file_type == 'root' and st.session_state.root_info:
+            st.warning(f"ROOT file **{st.session_state.filename}** loaded. Please go to **🤖 AI Analysis** to select and load a TTree.")
+            st.markdown("### File Contents")
+            st.json(st.session_state.root_info)
+        else:
+            st.warning("⚠️ No data loaded. Please upload data or load an example first.")
+            st.markdown("Go to **📤 Upload Data** or **📚 Examples Gallery** to load a dataset.")
 
 # Footer
 st.sidebar.markdown("---")
