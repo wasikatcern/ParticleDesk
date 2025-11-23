@@ -21,131 +21,118 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 # This is using Google Gemini's free API (no payment required, just get a free API key from Google AI Studio)
 gemini_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
-# --- Internal Utility for Plotting ---
+# --- Available Analysis Functions (Internal) ---
 
-def plot_histogram_to_base64(df: pd.DataFrame, column: str = 'M_4l', bins: int = 50, title: str = None) -> str:
-    """Generates a histogram plot and returns it as a base64 encoded string."""
-    try:
-        if column not in df.columns:
-            return f"Error: Column '{column}' not found in the data."
+def plot_histogram_internal(df: pd.DataFrame, ax: plt.Axes, plot_type: str, **kwargs) -> Dict[str, Any]:
+    """Helper to run the plotting logic based on type."""
+    
+    # Get the column from kwargs or use a default fallback (M for invariant mass)
+    col = kwargs.get('column', 'M_4l')
+    
+    # Check if the column exists in the DataFrame
+    if col not in df.columns:
+        return {'success': False, 'error': f"Plotting failed: Column '{col}' not found in the DataFrame."}
+    
+    data = df[col].dropna()
 
-        # Filter out NaNs for plotting
-        data = df[column].dropna()
-
-        # Create the plot
-        fig, ax = plt.subplots(figsize=(8, 5))
+    if plot_type == 'invariant_mass':
+        # Safely determine min/max for the plot range
+        data_min = data.min() if not data.empty else 0
+        data_max = data.max() if not data.empty else 200
         
-        # Determine the plot type based on the column name for specialized coloring/labels
-        plot_type = 'invariant_mass' if 'M_' in column or 'mass' in column.lower() else 'generic'
-
-        if plot_type == 'invariant_mass' and column in df.columns:
-            # Special handling for mass plots (e.g., Higgs mass line)
-            range_min = data.min()
-            range_max = data.max()
-            ax.hist(data, bins=bins, range=(range_min, range_max), 
-                    edgecolor='black', alpha=0.7, color='steelblue')
-            ax.set_xlabel(f'{title or column} [GeV/c²]', fontsize=12)
-            
-            # Add Higgs mass line if in range
-            if range_min <= 125 <= range_max:
-                ax.axvline(125, color='red', linestyle='--', linewidth=2, label='Higgs mass (125 GeV)')
-                ax.legend()
+        range_min = kwargs.get('range_min', math.floor(data_min))
+        range_max = kwargs.get('range_max', math.ceil(data_max))
+        bins = kwargs.get('bins', 50)
         
-        elif plot_type == 'momentum':
-            ax.hist(data, bins=bins, edgecolor='black', alpha=0.7, color='forestgreen')
-            ax.set_xlabel(f'{title or column} [GeV/c]', fontsize=12)
-
-        else: # Generic plot
-            ax.hist(data, bins=bins, edgecolor='black', alpha=0.7, color='gray')
-            ax.set_xlabel(f'{title or column}', fontsize=12)
-
-
+        # Ensure plot range is sensible
+        range_min = max(0, range_min)
+        range_max = max(range_max, range_min + 1)
+        
+        ax.hist(data, bins=bins, range=(range_min, range_max), 
+                edgecolor='black', alpha=0.7, color='steelblue')
+        ax.set_xlabel(f'{col} [GeV/c²]', fontsize=12)
         ax.set_ylabel('Events', fontsize=12)
-        ax.set_title(title or f'Distribution of {column}', fontsize=14, fontweight='bold')
+        ax.set_title(f'Invariant Mass Distribution of {col}', fontsize=14, fontweight='bold')
         ax.grid(True, alpha=0.3)
-        plt.tight_layout()
-
-        # Save to a base64 string
-        import io
-        import base64
-        buf = io.BytesIO()
-        plt.savefig(buf, format='png')
-        plt.close(fig) # Close the figure to free memory
-        return base64.b64encode(buf.getvalue()).decode('utf-8')
-
-    except Exception as e:
-        return f"Plotting Error: {str(e)}"
-
-# --- Function Definitions for Gemini Schema (Structured Output) ---
-
-def get_data_metadata(df: pd.DataFrame = None) -> None:
-    """
-    Retrieves and summarizes key metadata about the DataFrame, including the number of rows (events), 
-    number of columns (variables), and a list of all column names.
-    """
-    pass # Actual execution happens in analyze_with_ai
-
-def get_stats(column: str, df: pd.DataFrame = None) -> None:
-    """
-    Calculates descriptive statistics (mean, median, std, min, max, count) for a specified numerical column.
-    The analysis should only request this function for numerical columns in the data.
-    """
-    pass # Actual execution happens in analyze_with_ai
-
-def plot_histogram(column: str, bins: int = 50, title: str = None) -> None:
-    """
-    Generates a histogram for a numerical column, useful for visualizing distributions like 
-    invariant mass, transverse momentum, or energy.
-    """
-    pass # Actual execution happens in analyze_with_ai
-
-def calculate_invariant_mass(mass_type: str, lepton_cols: List[str] = None) -> None:
-    """
-    (Placeholder) Plans the calculation of the invariant mass for a system of particles 
-    (e.g., 2-lepton, 4-lepton). Supported mass_types: '2l', '4l'.
-    The execution is a placeholder in this simplified model.
-    """
-    pass # Actual execution happens in analyze_with_ai
-
-
-# --- Define the overall response schema for the analysis plan ---
-
-RESPONSE_SCHEMA = types.Schema(
-    type=types.Type.OBJECT,
-    properties={
-        'explanation': types.Schema(
-            type=types.Type.STRING,
-            description="A conversational and educational explanation of the user's request and how the analysis plan will address it. This should be the first part of the final output."
-        ),
-        'pipeline': types.Schema(
-            type=types.Type.ARRAY,
-            description="A list of analysis steps to execute.",
-            items=types.Schema(
-                type=types.Type.OBJECT,
-                properties={
-                    'function': types.Schema(
-                        type=types.Type.STRING,
-                        description="The name of the function to call (e.g., 'plot_histogram')."
-                    ),
-                    'args': types.Schema(
-                        type=types.Type.OBJECT,
-                        description="A dictionary of arguments for the function."
-                    )
-                },
-                required=['function', 'args']
-            )
+        
+        # Add Higgs mass line if relevant and in range
+        if range_min <= 125 <= range_max:
+            ax.axvline(125, color='red', linestyle='--', linewidth=2, label='Higgs mass (125 GeV/c²)')
+            ax.legend()
+    
+    elif plot_type == 'momentum':
+        pt_col = kwargs.get('pt_col', 'pt1')
+        bins = kwargs.get('bins', 50)
+        
+        ax.hist(data, bins=bins, edgecolor='black', alpha=0.7, color='forestgreen')
+        ax.set_xlabel('Transverse momentum $p_T$ [GeV/c]', fontsize=12)
+        ax.set_ylabel('Events', fontsize=12)
+        ax.set_title(f'Transverse Momentum Distribution of {pt_col}', fontsize=14, fontweight='bold')
+        ax.grid(True, alpha=0.3)
+    
+    elif plot_type == 'eta_phi':
+        eta_col = kwargs.get('eta_col', 'eta1')
+        phi_col = kwargs.get('phi_col', 'phi1')
+        
+        if eta_col not in df.columns or phi_col not in df.columns:
+            return {'success': False, 'error': f"Plotting failed: One of the columns ('{eta_col}' or '{phi_col}') is missing for eta-phi plot."}
+            
+        # Create a 2D histogram (heatmap)
+        hist, xedges, yedges = np.histogram2d(
+            df[eta_col].dropna(), 
+            df[phi_col].dropna(), 
+            bins=kwargs.get('bins', 50),
+            range=[[-5, 5], [-math.pi, math.pi]] # Typical ranges for eta and phi
         )
-    },
-    required=['explanation', 'pipeline']
-)
+        
+        X, Y = np.meshgrid(xedges[:-1], yedges[:-1])
+        im = ax.pcolormesh(X, Y, hist.T, cmap='viridis')
+        plt.colorbar(im, ax=ax, label='Event Density')
+        
+        ax.set_xlabel(f'Pseudorapidity ($\eta$) of {eta_col}', fontsize=12)
+        ax.set_ylabel(f'Azimuthal Angle ($\phi$) of {phi_col}', fontsize=12)
+        ax.set_title(f'Eta-Phi Occupancy for {eta_col}/{phi_col}', fontsize=14, fontweight='bold')
+        ax.grid(True, alpha=0.3)
+        
+    else:
+        # Default histogram for any other numerical column
+        bins = kwargs.get('bins', 50)
+        
+        ax.hist(data, bins=bins, edgecolor='black', alpha=0.7, color='darkblue')
+        ax.set_xlabel(f'{col}', fontsize=12)
+        ax.set_ylabel('Events', fontsize=12)
+        ax.set_title(f'Distribution of {col}', fontsize=14, fontweight='bold')
+        ax.grid(True, alpha=0.3)
+
+    return {'success': True, 'plot_type': plot_type, 'column': col}
+
+def apply_filter_internal(df: pd.DataFrame, condition: str) -> pd.DataFrame:
+    """Apply a string-based filter to the DataFrame."""
+    try:
+        # Evaluate the filter condition safely using pd.eval
+        # WARNING: This assumes the condition string is safe and only uses df columns.
+        # In a real-world scenario, you would need robust sanitization/parsing.
+        mask = df.eval(condition)
+        return df[mask]
+    except Exception as e:
+        # Return original DataFrame on failure
+        print(f"Filter failed: {e}")
+        return df
+
+def get_stats_internal(df: pd.DataFrame, column: str) -> Dict[str, Any]:
+    """Calculate descriptive statistics for a column."""
+    if column in df.columns:
+        stats = df[column].describe().to_dict()
+        return stats
+    return {"error": f"Column '{column}' not found for statistics."}
 
 
-# --- Core Analysis Function ---
+# --- Gemini Interaction and Analysis Execution ---
 
 def analyze_with_ai(user_prompt: str, df: pd.DataFrame) -> dict:
     """
     Analyze particle physics data based on natural language prompt.
-    Uses a safe declarative approach by forcing a structured JSON plan, which is then executed.
+    Uses a safe declarative approach instead of executing arbitrary code.
     
     Args:
         user_prompt: Natural language analysis request
@@ -161,92 +148,162 @@ def analyze_with_ai(user_prompt: str, df: pd.DataFrame) -> dict:
             'error': 'Gemini API key not configured. Get a free API key from https://ai.google.dev/'
         }
     
-    # 1. Get data info for the model's context
+    # Get data info
     data_info = {
         'columns': df.columns.tolist(),
         'shape': df.shape,
-        'dtypes': {col: str(dtype) for col, dtype in df.dtypes.to_dict().items()},
-        'head': df.head(2).to_json(orient='records'),
+        'dtypes': {col: str(dtype) for col, dtype in df.dtypes.items()},
     }
-
-    system_prompt = f"""
-    You are an expert Particle Physics Data Analyst. Your task is to analyze user requests
-    in the context of the provided data, which is a pandas DataFrame.
     
-    The available DataFrame context is:
+    # Define the functions the model can call
+    tool_functions = [
+        types.Schema(
+            name="filter_data",
+            description="Filters the DataFrame based on a boolean condition (e.g., 'pt1 > 20' or 'charge1 + charge2 == 0'). This must be the first step for selection/analysis.",
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "condition": types.Schema(type=types.Type.STRING, description="The Pandas eval-compatible boolean condition string.")
+                },
+                required=["condition"]
+            ),
+        ),
+        types.Schema(
+            name="calculate_invariant_mass",
+            description="Calculates the invariant mass of a system (e.g., 4-lepton or 2-lepton) and adds it as a new column to the DataFrame, usually named 'M' or 'M_ll'. This is a conceptual placeholder as the actual calculation needs detailed column names.",
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "mass_type": types.Schema(type=types.Type.STRING, description="The type of invariant mass ('4l', '2l', etc.)")
+                },
+                required=["mass_type"]
+            ),
+        ),
+        types.Schema(
+            name="plot_histogram",
+            description="Generates a histogram plot for visualization.",
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "plot_type": types.Schema(type=types.Type.STRING, description="The type of plot ('invariant_mass', 'momentum', 'eta_phi', or 'general')."),
+                    "column": types.Schema(type=types.Type.STRING, description="The specific column name to plot (e.g., 'M_4l', 'pt1').")
+                },
+                required=["plot_type", "column"]
+            ),
+        ),
+        types.Schema(
+            name="get_stats",
+            description="Calculates descriptive statistics (mean, std, min, max, count) for a specific numerical column.",
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "column": types.Schema(type=types.Type.STRING, description="The column name for which to calculate statistics.")
+                },
+                required=["column"]
+            ),
+        ),
+    ]
+
+    # --- System Instruction for the Model ---
+    system_instruction = f"""
+    You are an expert particle physics data analysis assistant. Your task is to interpret a user's request, analyze the provided data structure, and generate a JSON object representing a complete, multi-step analysis plan.
+
+    The user is working with a pandas DataFrame that has the following structure:
     {json.dumps(data_info, indent=2)}
 
-    Your response MUST be a single JSON object strictly following the RESPONSE_SCHEMA.
-    
-    1. **Explanation**: Start with an educational and conversational explanation of the analysis plan. If the user only asks for data properties (like columns or size), you MUST answer in the 'explanation' and use the 'get_data_metadata' function in the pipeline.
-    2. **Pipeline**: Generate a 'pipeline' of function calls (e.g., plot_histogram, get_stats) to execute the analysis. If the analysis is purely informational, use 'get_data_metadata'.
-
-    DO NOT include any code or text outside of the JSON block.
-    """
-    
-    try:
-        # 2. Call the Gemini API to get the structured analysis plan
-        
-        # Define the list of available functions for the model to generate the plan
-        analysis_functions = [
-            get_data_metadata,
-            get_stats,
-            plot_histogram,
-            calculate_invariant_mass
+    Your response MUST be a single JSON object that follows this schema:
+    {{
+        "explanation": "A concise, step-by-step natural language explanation of the analysis plan before execution.",
+        "pipeline": [
+            {{
+                "function": "function_name",
+                "args": {{...}}
+            }},
+            // More function calls if needed
         ]
+    }}
 
+    Rules for creating the pipeline:
+    1.  Only use the functions defined in the `tool_functions` list.
+    2.  The pipeline MUST be ordered logically: `filter_data` always comes before `plot_histogram` or `get_stats` if a cut is requested.
+    3.  If a complex calculation like invariant mass is required, include the `calculate_invariant_mass` call, but you must assume the helper function will handle the actual calculation and column creation based on context.
+    4.  Provide specific, existing column names in the `args` (e.g., 'M_4l', 'pt1').
+    5.  Do not hallucinate function calls or arguments.
+    6.  If the user asks for a plot, the final step in the pipeline should be `plot_histogram`.
+    7.  Keep the pipeline concise (2-4 steps max).
+    """
+
+    # --- Call the Gemini API for tool calling ---
+    try:
         response = gemini_client.models.generate_content(
-            model='gemini-2.5-flash-preview-09-2025',
-            contents=[
-                types.Content(role='user', parts=[types.Part.from_text(user_prompt)])
-            ],
+            model='gemini-2.5-flash',
+            contents=user_prompt,
             config=types.GenerateContentConfig(
-                system_instruction=types.Part.from_text(system_prompt),
+                system_instruction=system_instruction,
                 response_mime_type="application/json",
-                response_schema=RESPONSE_SCHEMA,
-                # Explicitly pass the function definitions so the model can choose them for the plan
-                tools=analysis_functions 
+                response_schema=types.Schema(
+                    type=types.Type.OBJECT,
+                    properties={
+                        "explanation": types.Schema(type=types.Type.STRING),
+                        "pipeline": types.Schema(
+                            type=types.Type.ARRAY,
+                            items=types.Schema(
+                                type=types.Type.OBJECT,
+                                properties={
+                                    "function": types.Schema(type=types.Type.STRING),
+                                    "args": types.Schema(type=types.Type.OBJECT)
+                                },
+                                required=["function", "args"]
+                            )
+                        )
+                    },
+                    required=["explanation", "pipeline"]
+                )
             )
         )
         
-        # 3. Parse the structured JSON output
-        if not response.text:
-            return {'success': False, 'error': "AI returned an empty response."}
-
-        # The response.text should be a JSON string conforming to RESPONSE_SCHEMA
-        try:
-            analysis_plan = json.loads(response.text)
-        except json.JSONDecodeError:
-            print("Raw response text:", response.text)
-            return {'success': False, 'error': "AI returned malformed JSON. Check the console for raw output."}
-
-
-        # 4. Input Validation (minimal safety check)
-        if not isinstance(analysis_plan.get('pipeline'), list):
-            return {'success': False, 'error': "AI plan is missing a valid 'pipeline' array."}
-
+        # Parse the JSON response from the model
+        analysis_plan = json.loads(response.text)
         
-        # 5. Execute the analysis pipeline defined by the model
-        pipeline_results = []
-        current_df = df.copy() # Start with a copy of the original dataframe
+    except Exception as e:
+        return {'success': False, 'error': f"Gemini API call or JSON parsing failed: {str(e)}"}
 
+    # --- Execute the Analysis Pipeline ---
+    current_df = df.copy()
+    pipeline_results = []
+    plot_info = None
+    
+    try:
+        # 5. Iterate through the generated pipeline
         for step in analysis_plan.get('pipeline', []):
             function_name = step.get('function')
             args = step.get('args', {})
+            
+            # This is where the model's intent is executed by internal functions
+            if function_name == 'filter_data':
+                condition = args.get('condition')
+                original_shape = current_df.shape
+                current_df = apply_filter_internal(current_df, condition)
+                
+                result_msg = (
+                    f"Applied filter: `{condition}`. "
+                    f"Shape changed from {original_shape} to {current_df.shape}. "
+                    f"Events remaining: {current_df.shape[0]}"
+                )
+                pipeline_results.append({'function': function_name, 'result': result_msg})
 
-            if function_name == 'plot_histogram':
-                # Plotting step
-                plot_data = plot_histogram_to_base64(current_df, **args)
-                pipeline_results.append({'function': function_name, 'plot': plot_data, 'args': args})
-
-            elif function_name == 'get_data_metadata':
-                # Simple metadata step
-                result_msg = f"Data has {current_df.shape[0]} rows (events) and {current_df.shape[1]} columns (variables). Column names are: {', '.join(current_df.columns.tolist())}"
+            elif function_name == 'plot_histogram':
+                # This function call prepares the final plot and returns its configuration
+                # The actual plotting will be done in the main Streamlit app based on `plot_info`
+                plot_info = args
+                plot_info['df'] = current_df.copy() # Save the filtered DataFrame for plotting
+                result_msg = f"Plot configured: {plot_info.get('plot_type')} for column {plot_info.get('column')}. Plot will be rendered next."
                 pipeline_results.append({'function': function_name, 'result': result_msg})
 
             elif function_name == 'calculate_invariant_mass':
-                # Placeholder for the actual calculation logic
-                 result_msg = f"Mass calculation for type {args.get('mass_type')} is planned but not executed in this simplified model. Placeholder execution."
+                 # Placeholder for the actual calculation logic
+                 # NOTE: In a complete system, this would call functions from physics_utils.py
+                 result_msg = f"Mass calculation for type {args.get('mass_type')} is planned but not executed in this simplified model."
                  pipeline_results.append({'function': function_name, 'result': result_msg})
 
             elif function_name == 'get_stats':
@@ -254,11 +311,9 @@ def analyze_with_ai(user_prompt: str, df: pd.DataFrame) -> dict:
                 col = args.get('column')
                 if col and col in current_df.columns:
                     stats = current_df[col].describe().to_dict()
-                    result_msg = f"Statistics for **{col}**:\n"
-                    # Format stats nicely
-                    result_msg += "\n".join([f"- {k.capitalize()}: {v:.4f}" for k, v in stats.items()])
+                    result_msg = f"Statistics for {col}: {json.dumps(stats, indent=2)}"
                 else:
-                    result_msg = f"Statistics calculation skipped due to missing or invalid column: {col}."
+                    result_msg = "Statistics calculation skipped due to missing or invalid column."
                 pipeline_results.append({'function': function_name, 'result': result_msg})
 
             else:
@@ -270,11 +325,11 @@ def analyze_with_ai(user_prompt: str, df: pd.DataFrame) -> dict:
             'success': True,
             'explanation': analysis_plan.get('explanation', 'Analysis pipeline executed.'),
             'results': pipeline_results,
-            'final_df_shape': current_df.shape
+            'final_df_shape': current_df.shape,
+            'plot_info': plot_info # Include plot configuration for the main app
         }
 
     except Exception as e:
-        # Catch and report any generic execution error, including API communication failure
         return {'success': False, 'error': f"AI Analysis Failed: {type(e).__name__}: {str(e)}"}
 
 if __name__ == '__main__':
